@@ -365,9 +365,9 @@ function createRoom(name, dispose) {
       player.rec = [];
       room.events.push({
         type: 'die',
-        id: player.id,
-        by: best.ghost.name,
-        self: best.self,
+        victim_id: player.id,
+        ghost_owner_id: best.ghost.ownerId,
+        tick: room.t,
         x: player.x,
         y: player.y,
       });
@@ -449,7 +449,7 @@ function createRoom(name, dispose) {
         player.vx = 0;
         player.vy = 0;
         player.rec = [];
-        room.events.push({ type: 'die', id: player.id, by: '怪物', self: false, x: player.x, y: player.y });
+        room.events.push({ type: 'die', victim_id: player.id, ghost_owner_id: '', tick: room.t, x: player.x, y: player.y });
       }
     }
     const reaped = rules.reapMonsters(room.monsters, room.seed, room.step);
@@ -927,6 +927,7 @@ function createApp(options = {}) {
   const autoTick = options.autoTick !== false;
   const rooms = new Map();
   let timer = null;
+  let closed = false;
   let acc = 0;
   let last = Date.now();
 
@@ -1039,6 +1040,8 @@ function createApp(options = {}) {
       });
     },
     close() {
+      if (closed) return Promise.resolve();
+      closed = true;
       if (timer) clearInterval(timer);
       for (const socket of wss.clients) socket.close();
       wss.close();

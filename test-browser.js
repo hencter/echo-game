@@ -41,13 +41,14 @@ async function main() {
   const solo = await launch(0);
   try {
     await testSolo(solo, port);
+    await testEndMenu(solo, port);
   } finally {
     await solo.close();
   }
   const left = await launch(0);
   const right = await launch(980);
   try {
-    await testPair(left, right, port);
+    await testPair(left, right, port, app);
     console.log('browser ok');
   } finally {
     await left.close();
@@ -150,6 +151,45 @@ async function testSolo(browser, port) {
   await page.close();
 }
 
+async function testEndMenu(browser, port) {
+  const { page, errors } = await boot(browser, port, '终');
+  await key(page, 'keydown', ' ');
+  await until(page, () => window.__echo().state === 'play', 'end play');
+  await until(page, () => window.__echo().state === 'shop', 'end shop', 12000);
+  await until(page, () => {
+    const left = window.__echo().shopLeft;
+    return left > 0 && left <= 390;
+  }, 'shop warmed', 8000);
+  await page.evaluate(() => window.__echoShop({ act: 'ready' }));
+  await until(page, () => window.__echo().state === 'over', 'solo over', 8000);
+  const over = await page.evaluate(() => window.__echo());
+  assert(over.endPrompt.indexOf('回主菜单') >= 0 && over.endPrompt.indexOf('Esc') >= 0, 'prompt lists the menu actions, saw ' + over.endPrompt);
+  assert(over.endPrompt.indexOf('闯关') < 0, 'prompt does not mention the hidden campaign button');
+  const hidden = await hiddenButtons(page);
+  assert(hidden.campaign && hidden.quests && hidden.multi, 'the end screen keeps the mode buttons hidden');
+  const hit = (over.endHits || []).find((item) => item.act === 'menu');
+  assert(hit, 'the end screen has a menu button');
+  await page.mouse.click(hit.x + hit.w / 2, hit.y + hit.h / 2);
+  await until(page, () => window.__echo().state === 'menu', 'click returns to the menu');
+  const clicked = await hiddenButtons(page);
+  assert(!clicked.campaign && !clicked.quests && !clicked.multi, 'the mode buttons return after the click');
+  await key(page, 'keydown', ' ');
+  await until(page, () => window.__echo().state === 'play', 'second play');
+  await until(page, () => window.__echo().state === 'shop', 'second shop', 12000);
+  await until(page, () => {
+    const left = window.__echo().shopLeft;
+    return left > 0 && left <= 390;
+  }, 'second shop warmed', 8000);
+  await page.evaluate(() => window.__echoShop({ act: 'ready' }));
+  await until(page, () => window.__echo().state === 'over', 'second over', 8000);
+  await key(page, 'keydown', 'Escape');
+  await until(page, () => window.__echo().state === 'menu', 'escape returns to the menu');
+  const keyed = await hiddenButtons(page);
+  assert(!keyed.campaign && !keyed.quests && !keyed.multi, 'escape shows the mode buttons again');
+  assert(!errors.length, 'end menu errors ' + errors.join(' | '));
+  await page.close();
+}
+
 function windowActive(net) {
   return !!(net && net.active);
 }
@@ -184,7 +224,7 @@ async function until(page, pred, label, timeout = 12000) {
   throw new Error('timeout ' + label + ' ' + JSON.stringify(last));
 }
 
-async function testPair(leftBrowser, rightBrowser, port) {
+async function testPair(leftBrowser, rightBrowser, port, app) {
   const left = await boot(leftBrowser, port, '甲');
   const right = await boot(rightBrowser, port, '乙');
   await left.page.evaluate(() => document.getElementById('multi').click());
@@ -193,6 +233,8 @@ async function testPair(leftBrowser, rightBrowser, port) {
   await until(right.page, () => window.__echoNet().active && window.__echoNet().players.length === 2, 'lobby b');
   const lobbyButtons = await hiddenButtons(left.page);
   assert(!lobbyButtons.campaign && !lobbyButtons.quests && !lobbyButtons.multi, 'the lobby menu still shows the three buttons');
+  const lobbyNote = await left.page.evaluate(() => document.getElementById('netmsg').textContent || '');
+  assert(lobbyNote.indexOf('同一块') >= 0, 'the lobby shows the start hint');
   await left.page.screenshot({ path: path.join(OUT, 'lobby-a.png') });
   await right.page.screenshot({ path: path.join(OUT, 'lobby-b.png') });
   await key(left.page, 'keydown', ' ');
@@ -200,6 +242,8 @@ async function testPair(leftBrowser, rightBrowser, port) {
   await until(right.page, () => window.__echo().state === 'play', 'play b');
   const matchButtons = await hiddenButtons(left.page);
   assert(matchButtons.campaign && matchButtons.quests && matchButtons.multi, 'a multiplayer match hides the menu buttons');
+  const playNote = await left.page.evaluate(() => document.getElementById('netmsg').textContent || '');
+  assert(playNote.indexOf('同一块') < 0, 'a match hides the start hint, saw ' + playNote);
   const starsA = await left.page.evaluate(() => window.__echo().starPos);
   const starsB = await right.page.evaluate(() => window.__echo().starPos);
   assert(JSON.stringify(starsA) === JSON.stringify(starsB), 'both clients share stars');
@@ -220,6 +264,8 @@ async function testPair(leftBrowser, rightBrowser, port) {
   }, 'shop or grace', 12000);
   const shopping = await left.page.evaluate(() => window.__echo().state === 'shop');
   if (shopping) {
+    const shopNote = await left.page.evaluate(() => document.getElementById('netmsg').textContent || '');
+    assert(shopNote.indexOf('同一块') < 0, 'the shop hides the start hint, saw ' + shopNote);
     await left.page.evaluate(() => {
       const offer = window.__echo().offers[0];
       if (offer) window.__echoShop({ act: 'buy', uid: offer.uid });
@@ -239,6 +285,35 @@ async function testPair(leftBrowser, rightBrowser, port) {
   const graceA = await left.page.evaluate(() => window.__echo());
   const graceB = await right.page.evaluate(() => window.__echo());
   assert(graceA.footDash && graceB.footDash, 'both draw dashed rings from the server grace bit');
+  const labels = await left.page.evaluate(() => {
+    const echo = window.__echo();
+    const net = window.__echoNet();
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const dpr = canvas.width / window.innerWidth;
+    let colored = 0;
+    let white = 0;
+    (net.ghosts || []).forEach((ghost) => {
+      const pts = ghost.pts || [];
+      const q = pts[Math.min(echo.t, Math.max(0, pts.length - 1))];
+      if (!q) return;
+      const sx = (echo.view.ox + q.x * echo.view.s) * dpr;
+      const sy = (echo.view.oy + (q.y + 12) * echo.view.s) * dpr;
+      const x0 = Math.max(0, Math.floor(sx - 16));
+      const y0 = Math.max(0, Math.floor(sy));
+      const img = ctx.getImageData(x0, y0, 32, 12);
+      for (let i = 0; i < img.data.length; i += 4) {
+        const r = img.data[i];
+        const g = img.data[i + 1];
+        const b = img.data[i + 2];
+        if (r > 200 && g > 200 && b > 200) white++;
+        if (r > g + 15 && r > 50 && r > b) colored++;
+      }
+    });
+    return { colored, white };
+  });
+  assert(labels.colored >= 4, 'echo names are tinted under the ring, saw ' + labels.colored);
+  assert(labels.white === 0, 'echo names are not white, saw ' + labels.white);
   assert(graceA.t === graceB.t || Math.abs(graceA.t - graceB.t) <= 1, 'grace step stays together');
   assert(graceA.flicker === (Math.floor(graceA.t / 2) % 2 === 0 ? 0.5 : 0.15), 'flicker is a function of the server step');
   await left.page.screenshot({ path: path.join(OUT, 'grace-a.png') });
@@ -274,8 +349,16 @@ async function testPair(leftBrowser, rightBrowser, port) {
   await until(left.page, () => window.__echo().state === 'menu', 'left the match');
   const returned = await hiddenButtons(left.page);
   assert(!returned.campaign && !returned.quests && !returned.multi, 'the menu buttons return after leaving');
+  const leftNote = await left.page.evaluate(() => document.getElementById('netmsg').textContent || '');
+  assert(leftNote.indexOf('连不上') < 0, 'leaving is not a connection failure, saw ' + leftNote);
   assert(!left.errors.length, 'client A errors ' + left.errors.join(' | '));
   assert(!right.errors.length, 'client B errors ' + right.errors.join(' | '));
+  await app.close();
+  await left.page.evaluate(() => document.getElementById('multi').click());
+  await until(left.page, () => (document.getElementById('netmsg').textContent || '').indexOf('连不上') >= 0, 'offline note', 4000);
+  const fail = await left.page.evaluate(() => document.getElementById('netmsg').textContent || '');
+  assert(fail.indexOf(String(port)) >= 0, 'the failure names the port in use, saw ' + fail);
+  if (String(port) !== '8787') assert(fail.indexOf('8787') < 0, 'the failure does not hardcode 8787, saw ' + fail);
 }
 
 main().catch((err) => {

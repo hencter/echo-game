@@ -71,6 +71,7 @@ async function main() {
     await testRoles(app, port);
     await testShopCountdown(app, port);
     await testShopHoldsPosition(app, port);
+    await testDeathCause(app, port);
     console.log('net rules ok');
   } finally {
     await app.close();
@@ -154,8 +155,18 @@ async function testGrace(app, port) {
   await waitFor(b, (snap) => snap.t === 60, 'protection ends peer');
   assert(me(a.last).mode === 'dead' && me(b.last).mode === 'dead', 'standing on an echo dies when grace ends');
   assert(a.last.state === 'over', 'the match ends when nobody is left');
-  const death = a.last.events.find((event) => event.type === 'die' && event.id === a.last.you);
-  assert(death && death.self === true, 'own echo is named when both overlap');
+  const deathsA = (a.last.events || []).filter((event) => event.type === 'die');
+  const deathsB = (b.last.events || []).filter((event) => event.type === 'die');
+  assert(deathsA.length === 2, 'one death event per victim, saw ' + deathsA.length);
+  assert(JSON.stringify(deathsA) === JSON.stringify(deathsB), 'both clients receive the same death events');
+  const victims = new Set();
+  deathsA.forEach((event) => {
+    assert(event.victim_id && event.tick === 60, 'death event carries victim_id and tick');
+    assert(event.ghost_owner_id === event.victim_id, 'standing on your echo names you as the owner');
+    assert(!('id' in event) && !('by' in event) && !('self' in event), 'the cause is not a client-side flag');
+    victims.add(event.victim_id);
+  });
+  assert(victims.size === 2, 'each victim is listed once');
   a.ws.close();
   b.ws.close();
   await flush();
@@ -539,6 +550,54 @@ async function testShopHoldsPosition(app, port) {
   await flush();
   assert(me(a.last).x < opened.x - 15, 'movement works again after the shop, saw ' + me(a.last).x);
   a.ws.close();
+  await flush();
+}
+
+async function testDeathCause(app, port) {
+  const rules = require('./shared');
+  assert(rules.echoDeathLine('v', 'v', '甲') === '撞上了自己的回声', 'own echo line');
+  assert(rules.echoDeathLine('v', 'o', '甲') === '撞上了甲的回声', 'other echo line');
+  assert(rules.echoDeathLine('v', '', '') === '被怪物打倒了', 'monster line');
+  const a = await openClient(port, 'cause', '甲');
+  const b = await openClient(port, 'cause', '乙');
+  await waitFor(b, (snap) => snap.players.length === 2, 'cause lobby');
+  send(a, { type: 'start' });
+  await waitFor(a, (snap) => snap.state === 'play', 'cause start');
+  send(b, { type: 'input', ax: 0, ay: -1, mouse: null, keyboard: true });
+  await flush();
+  for (let i = 0; i < 40; i++) app.tickAll();
+  send(b, { type: 'input', ax: 0, ay: 0, mouse: null, keyboard: false });
+  await flush();
+  for (let i = 0; i < 320; i++) app.tickAll();
+  await leaveShop(app, [a, b], 2);
+  const home = { x: me(a.last).x, y: me(a.last).y };
+  send(b, { type: 'input', ax: 0, ay: 0, mouse: home, keyboard: false });
+  await flush();
+  let own = null;
+  let cross = null;
+  for (let i = 0; i < 220 && !cross; i++) {
+    const step = b.last.step;
+    app.tickAll();
+    await waitFor(b, (snap) => snap.step !== step || snap.state === 'over', 'cause tick ' + i);
+    (b.last.events || []).forEach((event) => {
+      if (event.type !== 'die') return;
+      assert(event.victim_id && Number.isFinite(event.tick), 'death event carries victim_id and tick');
+      assert(!('id' in event) && !('by' in event) && !('self' in event), 'death event has no client cause flag');
+      if (event.victim_id === a.last.you) own = event;
+      if (event.victim_id === b.last.you) cross = event;
+    });
+    if (a.last && a.last.step === b.last.step) {
+      const left = (a.last.events || []).filter((event) => event.type === 'die');
+      const right = (b.last.events || []).filter((event) => event.type === 'die');
+      if (left.length || right.length) assert(JSON.stringify(left) === JSON.stringify(right), 'both clients list the same deaths');
+    }
+  }
+  assert(own && own.ghost_owner_id === own.victim_id, 'the still player dies to their own echo');
+  assert(rules.echoDeathLine(own.victim_id, own.ghost_owner_id, '甲') === '撞上了自己的回声', 'still death reads as your own echo');
+  assert(cross && cross.ghost_owner_id === a.last.you && cross.ghost_owner_id !== cross.victim_id, 'the mover dies to the other echo');
+  assert(rules.echoDeathLine(cross.victim_id, cross.ghost_owner_id, '甲') === '撞上了甲的回声', 'other echo uses the owner name');
+  a.ws.close();
+  b.ws.close();
   await flush();
 }
 
