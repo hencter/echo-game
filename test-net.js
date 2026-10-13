@@ -122,6 +122,7 @@ async function testMoveAndStars(app, port) {
 }
 
 async function testGrace(app, port) {
+  const rules = require('./shared');
   const a = await openClient(port, 'grace', '甲');
   const b = await openClient(port, 'grace', '乙');
   await waitFor(b, (snap) => snap.players.length === 2, 'grace lobby');
@@ -141,18 +142,29 @@ async function testGrace(app, port) {
   await leaveShop(app, [a, b], 2);
   await waitFor(b, (snap) => snap.round === 2 && snap.grace === true, 'server raises grace when the echo appears');
   assert(a.last.grace === true && b.last.grace === true, 'server raises grace when the echo appears');
+  assert(a.last.grace_until_tick === rules.GRACE_TICKS, 'round start sends grace_until_tick');
+  assert(a.last.t === 0, 'the echoed round starts at tick 0');
+  assert(!(a.last.events || []).some((event) => event.type === 'die'), 'tick 0 has no death yet');
   assert(a.last.ghosts.length === 2 && a.last.ghosts[0].pts.length === 360, 'both full routes are committed');
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < rules.GRACE_TICKS; i++) {
+    const prev = a.last.step;
     app.tickAll();
-    if (i === 59) {
-      await waitFor(a, (snap) => snap.round === 2 && snap.t === 59 && snap.grace === true, 'tick 59 is still protected');
-      await waitFor(b, (snap) => snap.round === 2 && snap.t === 59, 'tick 59 peer');
+    await waitFor(a, (snap) => snap.step !== prev, 'grace tick ' + i);
+    await waitFor(b, (snap) => snap.step === a.last.step, 'grace tick peer ' + i);
+    const dies = (a.last.events || []).filter((event) => event.type === 'die');
+    assert(a.last.t < a.last.grace_until_tick, 'grace covers t=' + a.last.t);
+    assert(!dies.length, 'no death event during grace at t=' + a.last.t);
+    if (i === 0) assert(a.last.t === 0 && me(a.last).mode === 'play' && me(b.last).mode === 'play', 'overlap at tick 0 is not death');
+    if (i === rules.GRACE_TICKS - 1) {
+      assert(a.last.round === 2 && a.last.t === rules.GRACE_TICKS - 1 && a.last.grace === true, 'the last grace tick is still protected');
       assert(me(a.last).mode === 'play' && me(b.last).mode === 'play', 'overlap during grace is not death');
     }
   }
+  const prev = a.last.step;
   app.tickAll();
-  await waitFor(a, (snap) => snap.round === 2 && snap.t === 60 && snap.grace === false, 'protection ends on step 60');
-  await waitFor(b, (snap) => snap.t === 60, 'protection ends peer');
+  await waitFor(a, (snap) => snap.step !== prev && snap.t === rules.GRACE_TICKS, 'first tick after grace');
+  await waitFor(b, (snap) => snap.t === rules.GRACE_TICKS, 'protection ends peer');
+  assert(a.last.grace === false && a.last.t === a.last.grace_until_tick, 'the first tick after grace is no longer protected');
   assert(me(a.last).mode === 'dead' && me(b.last).mode === 'dead', 'standing on an echo dies when grace ends');
   assert(a.last.state === 'over', 'the match ends when nobody is left');
   const deathsA = (a.last.events || []).filter((event) => event.type === 'die');
@@ -161,8 +173,9 @@ async function testGrace(app, port) {
   assert(JSON.stringify(deathsA) === JSON.stringify(deathsB), 'both clients receive the same death events');
   const victims = new Set();
   deathsA.forEach((event) => {
-    assert(event.victim_id && event.tick === 60, 'death event carries victim_id and tick');
+    assert(event.victim_id && event.victim_name && event.tick === rules.GRACE_TICKS, 'death event carries victim, name, and tick');
     assert(event.ghost_owner_id === event.victim_id, 'standing on your echo names you as the owner');
+    assert(rules.echoDeathLine(event.victim_id, event.ghost_owner_id, event.victim_name, event.victim_name) === event.victim_name + '撞上了自己的回声', 'the line is assembled from the event');
     assert(!('id' in event) && !('by' in event) && !('self' in event), 'the cause is not a client-side flag');
     victims.add(event.victim_id);
   });
@@ -555,9 +568,9 @@ async function testShopHoldsPosition(app, port) {
 
 async function testDeathCause(app, port) {
   const rules = require('./shared');
-  assert(rules.echoDeathLine('v', 'v', '甲') === '撞上了自己的回声', 'own echo line');
-  assert(rules.echoDeathLine('v', 'o', '甲') === '撞上了甲的回声', 'other echo line');
-  assert(rules.echoDeathLine('v', '', '') === '被怪物打倒了', 'monster line');
+  assert(rules.echoDeathLine('v', 'v', '甲', '甲') === '甲撞上了自己的回声', 'own echo line');
+  assert(rules.echoDeathLine('v', 'o', '乙', '甲') === '甲撞上了乙的回声', 'other echo line');
+  assert(rules.echoDeathLine('v', '', '', '甲') === '被怪物打倒了', 'monster line');
   const a = await openClient(port, 'cause', '甲');
   const b = await openClient(port, 'cause', '乙');
   await waitFor(b, (snap) => snap.players.length === 2, 'cause lobby');
@@ -592,10 +605,11 @@ async function testDeathCause(app, port) {
       if (left.length || right.length) assert(JSON.stringify(left) === JSON.stringify(right), 'both clients list the same deaths');
     }
   }
-  assert(own && own.ghost_owner_id === own.victim_id, 'the still player dies to their own echo');
-  assert(rules.echoDeathLine(own.victim_id, own.ghost_owner_id, '甲') === '撞上了自己的回声', 'still death reads as your own echo');
+  assert(own && own.ghost_owner_id === own.victim_id && own.victim_name === '甲', 'the still player dies to their own echo');
+  assert(rules.echoDeathLine(own.victim_id, own.ghost_owner_id, '甲', own.victim_name) === '甲撞上了自己的回声', 'still death reads as your own echo');
   assert(cross && cross.ghost_owner_id === a.last.you && cross.ghost_owner_id !== cross.victim_id, 'the mover dies to the other echo');
-  assert(rules.echoDeathLine(cross.victim_id, cross.ghost_owner_id, '甲') === '撞上了甲的回声', 'other echo uses the owner name');
+  assert(cross.victim_name === '乙', 'the death event names the victim');
+  assert(rules.echoDeathLine(cross.victim_id, cross.ghost_owner_id, '甲', cross.victim_name) === '乙撞上了甲的回声', 'other echo uses the owner name');
   a.ws.close();
   b.ws.close();
   await flush();
