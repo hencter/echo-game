@@ -962,8 +962,10 @@ function echoFlicker() {
 }
 
 function drawFootRing(q, dashed) {
+  // Sprite pixel (24, 46) is already drawn on q, and collision uses q too.
+  // The old center sat bodyR+4 below that, about 15px under the feet.
   const cx = q.x;
-  const cy = q.y + bodyR() + 4;
+  const cy = q.y;
   const radius = 4;
   x.save();
   x.setLineDash(dashed ? [2, 2] : []);
