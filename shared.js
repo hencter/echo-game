@@ -1122,7 +1122,7 @@
 
   const CAST = [
     { id: 'echo', name: '回声', blurb: '原来的圆身体', color: '#7ad7ff', sheet: '', slots: ['head', 'body', 'accessory'] },
-    { id: 'whale', name: '巨鲸', blurb: '一头抹香鲸', color: '#8fd0e8', sheet: 'assets/whale.png', slots: ['head', 'body', 'accessory'] },
+    { id: 'whale', name: '巨鲸', blurb: '一头抹香鲸', color: '#8fd0e8', sheet: 'assets/sperm_whale_sheet_1x.png', slots: ['head', 'body', 'accessory'] },
   ];
   const SPRITE = { frame: 48, cols: 6, rows: 4, idle: 2, walk: 4, footX: 24, footY: 46, dirs: ['down', 'left', 'right', 'up'] };
 

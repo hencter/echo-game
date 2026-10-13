@@ -454,15 +454,15 @@ async function testRoles(app, port) {
   const fs = require('fs');
   const whale = rules.roleById('whale');
   const echo = rules.roleById('echo');
-  assert(whale && whale.name === '巨鲸' && whale.sheet === 'assets/whale.png', 'the whale is a config row');
+  assert(whale && whale.name === '巨鲸' && whale.sheet === 'assets/sperm_whale_sheet_1x.png', 'the whale is a config row');
   assert(echo && !echo.sheet && echo.slots.join(',') === 'head,body,accessory', 'the original body keeps every slot');
   assert(whale.slots.join(',') === 'head,body,accessory', 'the whale can wear head, body, and accessory');
   assert(rules.SPRITE.frame === 48 && rules.SPRITE.cols === 6 && rules.SPRITE.rows === 4, 'sheet is 6 by 4 frames');
   assert(rules.SPRITE.idle === 2 && rules.SPRITE.walk === 4, 'two idle frames then four walk frames');
   assert(rules.SPRITE.footX === 24 && rules.SPRITE.footY === 46, 'the foot stays at (24, 46)');
   assert(rules.SPRITE.dirs.join(',') === 'down,left,right,up', 'rows run down, left, right, up');
-  const png = fs.readFileSync(require('path').join(__dirname, 'assets/whale.png'));
-  assert(png.readUInt32BE(16) === 288 && png.readUInt32BE(20) === 192, 'the placeholder sheet is 288 by 192');
+  const png = fs.readFileSync(require('path').join(__dirname, 'assets/sperm_whale_sheet_1x.png'));
+  assert(png.readUInt32BE(16) === 288 && png.readUInt32BE(20) === 192, 'the sheet is 288 by 192');
 
   const a = await openClient(port, 'cast', '鲸甲', 'whale');
   const b = await openClient(port, 'cast', '鲸乙', 'echo');
