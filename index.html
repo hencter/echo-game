@@ -123,6 +123,7 @@ let NET = {
   snap: null,
   epoch: -1,
   deathText: '',
+  roundDeaths: [],
   graceUntil: 0,
   savedBest: false,
   ws: null,
@@ -1538,14 +1539,17 @@ function endHitAt(pt) {
   return null;
 }
 
-function drawEndCard(title, detail, primary) {
+function drawEndCard(title, detail, primary, lines) {
   endHits = [];
+  const headlines = lines && lines.length ? lines : [title];
   const u = unit();
+  const lineH = 36;
+  const extra = Math.max(0, headlines.length - 1) * lineH;
   x.fillStyle = 'rgba(6,8,18,.58)';
   x.fillRect(0, 0, LW, LH);
   const bw = Math.min(LW - 48, u * 1.7);
   const soloEnd = !NET.active;
-  const bh = soloEnd ? u * 0.52 : u * 0.42;
+  const bh = (soloEnd ? u * 0.52 : u * 0.42) + extra;
   const bx = (LW - bw) / 2;
   const by = (LH - bh) / 2;
   x.fillStyle = 'rgba(12,16,32,.92)';
@@ -1558,11 +1562,11 @@ function drawEndCard(title, detail, primary) {
   x.fillStyle = '#fff';
   x.textAlign = 'center';
   x.font = 'bold ' + Math.round(u * 0.055) + 'px ui-sans-serif,system-ui,sans-serif';
-  x.fillText(title, LW / 2, by + 58);
+  headlines.forEach((line, i) => x.fillText(line, LW / 2, by + 58 + i * lineH));
   x.font = Math.round(u * 0.028) + 'px ui-sans-serif,system-ui,sans-serif';
-  x.fillText(detail, LW / 2, by + 98);
+  x.fillText(detail, LW / 2, by + 98 + extra);
   x.fillStyle = 'rgba(255,255,255,.88)';
-  x.fillText(primary, LW / 2, by + 136);
+  x.fillText(primary, LW / 2, by + 136 + extra);
   endPrompt = primary;
   if (!soloEnd) return;
   const hw = 168;
@@ -1648,10 +1652,12 @@ function drawOverlay() {
     x.textAlign = 'center';
   }
   if (state === 'over') {
+    const lines = roundDeathLines();
     drawEndCard(
-      overHeadline(),
+      lines[0],
       overDetail(),
-      campaignOn ? '空格或点击画面 重试这一关' : '空格或点击画面 再来一局'
+      campaignOn ? '空格或点击画面 重试这一关' : '空格或点击画面 再来一局',
+      lines
     );
   }
   if (state === 'clear') {
@@ -1860,6 +1866,7 @@ window.__echo = function () {
     endHits: endHits.map(h => ({ x: h.x, y: h.y, w: h.w, h: h.h, act: h.act })),
     endPrompt: endPrompt,
     deathText: NET.active ? (NET.deathText || '') : (deathCause || ''),
+    deathLines: listedDeaths(),
     graceUntil: NET.active ? (NET.graceUntil || 0) : GRACE,
     warn: warnLead(),
   };
@@ -1869,10 +1876,21 @@ window.__echoShop = function (hit) {
   actShop(hit);
 };
 
+function listedDeaths() {
+  if (!NET.active) return deathCause ? [deathCause] : [];
+  return (NET.roundDeaths || []).map((row) => row.line);
+}
+
+function roundDeathLines() {
+  const lines = listedDeaths();
+  if (lines.length) return lines;
+  if (NET.active && NET.deathText) return [NET.deathText];
+  if (NET.active) return ['这一局结束了'];
+  return ['撞上了过去的自己'];
+}
+
 function overHeadline() {
-  if (NET.active) return NET.deathText || '这一局结束了';
-  if (deathCause) return deathCause;
-  return '撞上了过去的自己';
+  return roundDeathLines()[0];
 }
 
 function overDetail() {
@@ -2084,11 +2102,19 @@ NET.ownerName = function (ownerId) {
   return '';
 };
 
+NET.clearRoundDeaths = function () {
+  this.roundDeaths = [];
+  this.deathText = '';
+};
+
 NET.applyEvents = function (events) {
+  if ((events || []).some((ev) => ev.type === 'round')) this.clearRoundDeaths();
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     if (ev.type === 'die') {
-      this.deathText = Rules.echoDeathLine(ev.victim_id, ev.ghost_owner_id, this.ownerName(ev.ghost_owner_id), ev.victim_name);
+      const owner = this.ownerName(ev.ghost_owner_id);
+      this.roundDeaths = Rules.recordRoundDeath(this.roundDeaths, ev, owner);
+      this.deathText = Rules.echoDeathLine(ev.victim_id, ev.ghost_owner_id, owner, ev.victim_name);
       if (ev.victim_id === this.id) {
         boom(ev.x, ev.y, '#f55', 48);
         beep(110, 0.5, 'sawtooth', 0.25);
@@ -2136,7 +2162,7 @@ NET.applyEvents = function (events) {
 NET.applySnap = function (msg) {
   if (msg.epoch !== this.epoch) {
     this.epoch = msg.epoch;
-    this.deathText = '';
+    this.clearRoundDeaths();
     const arrived = (msg.players || []).find(pl => pl.id === msg.you);
     if (arrived && p) {
       p.x = arrived.x;
@@ -2395,7 +2421,7 @@ NET.leave = function () {
   this.connecting = false;
   this.snap = null;
   this.grace = false;
-  this.deathText = '';
+  this.clearRoundDeaths();
   state = 'menu';
   campaignOn = false;
   board = '';

@@ -180,6 +180,17 @@
     return who + '撞上了' + (ownerName || '回声') + '的回声';
   }
 
+  function recordRoundDeath(rows, event, ownerName) {
+    const next = Array.isArray(rows) ? rows.slice() : [];
+    next.push({
+      tick: Number(event && event.tick) || 0,
+      order: next.length,
+      line: echoDeathLine(event && event.victim_id, event && event.ghost_owner_id, ownerName, event && event.victim_name),
+    });
+    next.sort((a, b) => a.tick - b.tick || a.order - b.order);
+    return next;
+  }
+
   function axis(v) {
     const n = Number(v);
     if (!Number.isFinite(n) || n === 0) return 0;
@@ -1181,6 +1192,7 @@
     starGoal: starGoal,
     protecting: protecting,
     echoDeathLine: echoDeathLine,
+    recordRoundDeath: recordRoundDeath,
     axis: axis,
     applyMove: applyMove,
     emptyGear: emptyGear,

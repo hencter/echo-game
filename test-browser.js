@@ -329,15 +329,22 @@ async function testDeathNames(leftBrowser, rightBrowser, port) {
   await left.page.evaluate(() => window.__echoShop({ act: 'ready' }));
   await right.page.evaluate(() => window.__echoShop({ act: 'ready' }));
   await until(left.page, () => {
-    const line = window.__echo().deathText || '';
-    return window.__echo().state === 'over' && line.indexOf('撞上了') >= 0;
-  }, 'named death', 8000);
-  const text = await left.page.evaluate(() => window.__echo().deathText);
-  const peer = await right.page.evaluate(() => window.__echo().deathText);
-  assert(text === peer, 'both clients show the same death line, ' + text + ' vs ' + peer);
-  assert(/^(甲|乙)撞上了自己的回声$/.test(text), 'the death line names the victim, saw ' + text);
+    const lines = window.__echo().deathLines || [];
+    return window.__echo().state === 'over' && lines.length >= 2;
+  }, 'both deaths listed', 8000);
+  await until(right.page, () => (window.__echo().deathLines || []).length >= 2 && window.__echo().state === 'over', 'peer lists both deaths', 8000);
+  const mine = await left.page.evaluate(() => window.__echo().deathLines.slice());
+  const peer = await right.page.evaluate(() => window.__echo().deathLines.slice());
+  assert(JSON.stringify(mine) === JSON.stringify(peer), 'both clients show the same death list, ' + mine.join(' | ') + ' vs ' + peer.join(' | '));
+  assert(mine.length === 2, 'the panel lists both deaths, saw ' + mine.join(' | '));
+  assert(mine.indexOf('甲撞上了自己的回声') >= 0 && mine.indexOf('乙撞上了自己的回声') >= 0, 'each victim is on the list, saw ' + mine.join(' | '));
+  assert(mine[0].indexOf('甲') === 0 && mine[1].indexOf('乙') === 0, 'the list follows death tick order, saw ' + mine.join(' | '));
   await left.page.screenshot({ path: path.join(OUT, 'death-a.png') });
   await right.page.screenshot({ path: path.join(OUT, 'death-b.png') });
+  await key(left.page, 'keydown', ' ');
+  await key(left.page, 'keyup', ' ');
+  await until(left.page, () => window.__echo().state === 'play' && window.__echo().round === 1 && (window.__echo().deathLines || []).length === 0, 'a new round clears the death list');
+  await until(right.page, () => window.__echo().state === 'play' && (window.__echo().deathLines || []).length === 0, 'the other client clears the death list too');
   assert(!left.errors.length, 'death client errors ' + left.errors.join(' | '));
   assert(!right.errors.length, 'death peer errors ' + right.errors.join(' | '));
 }
