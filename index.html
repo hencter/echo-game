@@ -57,6 +57,22 @@ let mouse = null;
 let shake = 0;
 let banner = 0;
 const Rules = window.EchoRules;
+let roleId = 'echo';
+try {
+  const savedRole = localStorage.echoRole;
+  if (Rules.roleById(savedRole)) roleId = savedRole;
+} catch (e) {}
+const sheets = {};
+const faceRows = {};
+function loadSheets() {
+  Rules.CAST.forEach(role => {
+    if (!role.sheet || sheets[role.id]) return;
+    const img = new Image();
+    img.src = role.sheet;
+    sheets[role.id] = img;
+  });
+}
+loadSheets();
 let gear = Rules.emptyGear();
 let hp = 1;
 let maxHp = 1;
@@ -89,6 +105,7 @@ let soloDashHits = {};
 let profile = null;
 let board = '';
 let boardHits = [];
+let castHits = [];
 let questOpen = false;
 let deathCause = '';
 let dashMul = 1;
@@ -968,12 +985,12 @@ function drawSpark(sx, sy, r) {
   x.fill();
 }
 
-function drawBadges(px, py, list) {
+function drawBadges(px, py, list, above) {
   if (!list || !list.length) return;
   const start = px - ((list.length - 1) * 14) / 2;
   list.forEach((g, i) => {
     const bx = start + i * 14;
-    const by = py - bodyR() - 18;
+    const by = above != null ? above : py - bodyR() - 18;
     x.beginPath();
     x.fillStyle = g.color || '#fff';
     x.arc(bx, by, 6, 0, Math.PI * 2);
@@ -983,6 +1000,49 @@ function drawBadges(px, py, list) {
     x.textAlign = 'center';
     x.fillText(g.mark, bx, by + 3);
   });
+}
+
+function pickRole(id) {
+  const role = Rules.roleById(id);
+  if (!role) return;
+  roleId = role.id;
+  try { localStorage.echoRole = role.id; } catch (e) {}
+  if (NET.active) NET.send({ type: 'role', id: role.id });
+}
+
+function faceRow(id, vx, vy) {
+  const speed = Math.hypot(vx || 0, vy || 0);
+  if (speed > 8) {
+    faceRows[id] = Math.abs(vx) > Math.abs(vy) ? (vx < 0 ? 1 : 2) : (vy < 0 ? 3 : 0);
+  }
+  return faceRows[id] || 0;
+}
+
+function drawSprite(ctx, px, py, id, row, moving, alpha, scale) {
+  const role = Rules.roleById(id);
+  const img = role && sheets[role.id];
+  if (!role || !role.sheet || !img || !img.complete || !img.naturalWidth) return false;
+  const spec = Rules.SPRITE;
+  const zoom = scale || 1;
+  const col = moving ? 2 + (Math.floor(Date.now() / 120) % spec.walk) : (Math.floor(Date.now() / 360) % spec.idle);
+  const prev = ctx.imageSmoothingEnabled;
+  ctx.imageSmoothingEnabled = false;
+  ctx.save();
+  if (alpha != null) ctx.globalAlpha *= alpha;
+  ctx.drawImage(
+    img,
+    col * spec.frame,
+    row * spec.frame,
+    spec.frame,
+    spec.frame,
+    px - spec.footX * zoom,
+    py - spec.footY * zoom,
+    spec.frame * zoom,
+    spec.frame * zoom
+  );
+  ctx.restore();
+  ctx.imageSmoothingEnabled = prev;
+  return true;
 }
 
 function drawPips(px, py, hearts, cap, blocks) {
@@ -1043,16 +1103,20 @@ function drawWorld() {
         ex.stroke();
         ex.setLineDash([]);
       }
+      const echoRole = (NET.ghostMeta && NET.ghostMeta[i] && NET.ghostMeta[i].role) || roleId;
+      const echoed = !eatenHead && q && drawSprite(ex, q.x, q.y, echoRole, 0, false, 0.72, 1);
+      if (!eatenHead && q && !echoed) {
+        ex.fillStyle = ghostColor(i, 0.95);
+        ex.beginPath();
+        ex.arc(q.x, q.y, bodyR(), 0, Math.PI * 2);
+        ex.fill();
+      }
       if (!eatenHead && q) {
-      ex.fillStyle = ghostColor(i, 0.95);
-      ex.beginPath();
-      ex.arc(q.x, q.y, bodyR(), 0, Math.PI * 2);
-      ex.fill();
-      ex.strokeStyle = ghostColor(i, 0.55);
-      ex.lineWidth = 1.5;
-      ex.beginPath();
-      ex.arc(q.x, q.y, Math.max(bodyR() + 2, collideDist() - bodyR()), 0, Math.PI * 2);
-      ex.stroke();
+        ex.strokeStyle = ghostColor(i, 0.55);
+        ex.lineWidth = 1.5;
+        ex.beginPath();
+        ex.arc(q.x, q.y, Math.max(bodyR() + 2, collideDist() - bodyR()), 0, Math.PI * 2);
+        ex.stroke();
       }
     });
     x.save();
@@ -1124,12 +1188,16 @@ function drawWorld() {
 
     if (p && state !== 'menu') {
       if (!NET.active) {
-        drawBadges(p.x, p.y, wornGear());
+        const wornRole = Rules.roleById(roleId);
+        drawBadges(p.x, p.y, wornGear(), wornRole && wornRole.sheet ? p.y - Rules.SPRITE.footY - 10 : null);
         drawPips(p.x, p.y, hp, maxHp, shield);
       }
+      const moving = Math.hypot(vx, vy) > 8;
+      const painted = drawSprite(x, p.x, p.y, roleId, faceRow('self', vx, vy), moving, iframes > 0 && Math.floor(t / 2) % 2 === 0 ? 0.35 : 1, 1);
+      if (!painted) {
       x.save();
       if (iframes > 0 && Math.floor(t / 2) % 2 === 0) x.globalAlpha = 0.35;
-      x.fillStyle = NET.active && NET.color ? NET.color : '#7ad7ff';
+      x.fillStyle = NET.active && NET.color ? NET.color : ((Rules.roleById(roleId) || {}).color || '#7ad7ff');
       x.shadowColor = '#6cf';
       x.shadowBlur = 18;
       x.beginPath();
@@ -1137,6 +1205,7 @@ function drawWorld() {
       x.fill();
       x.shadowBlur = 0;
       x.restore();
+      }
     }
   }
 
@@ -1251,7 +1320,7 @@ function drawShop() {
   x.font = '13px ui-sans-serif,system-ui,sans-serif';
   x.fillStyle = '#fff';
   x.textAlign = 'left';
-  Rules.SLOTS.forEach((slot, i) => {
+  Rules.slotsOf(roleId).forEach((slot, i) => {
     const worn = slots.filter(g => g.slot === slot)[0];
     const col = panel.x + 16 + i * 290;
     x.fillStyle = '#fff';
@@ -1329,25 +1398,66 @@ function shopHitAt(pt) {
   return null;
 }
 
+function castHitAt(pt) {
+  if (!pt) return null;
+  for (let i = castHits.length - 1; i >= 0; i--) {
+    const hit = castHits[i];
+    if (pt.x >= hit.x && pt.x <= hit.x + hit.w && pt.y >= hit.y && pt.y <= hit.y + hit.h) return hit;
+  }
+  return null;
+}
+
 function drawOverlay() {
+  castHits = [];
   x.fillStyle = '#fff';
   x.textAlign = 'center';
   const u = unit();
   if (state === 'menu') {
-    x.font = 'bold ' + Math.round(u * 0.09) + 'px ui-sans-serif,system-ui,sans-serif';
-    x.fillText('回 声', LW / 2, LH / 2 - u * 0.16);
-    x.font = Math.round(u * 0.032) + 'px ui-sans-serif,system-ui,sans-serif';
+    castHits = [];
+    x.font = 'bold ' + Math.round(u * 0.08) + 'px ui-sans-serif,system-ui,sans-serif';
+    x.fillText('回 声', LW / 2, 58);
+    x.font = Math.round(u * 0.028) + 'px ui-sans-serif,system-ui,sans-serif';
     x.fillStyle = 'rgba(255,255,255,.92)';
     const lines = [
-      '每 6 秒一轮，收集金星',
-      '你走过的路线会变成回声，下一轮原样重放',
-      '碰到任何一个过去的自己就输了',
-      '换轮后先离开刚画的线，回声会沿它走来',
-      '鼠标或触摸跟随，也可以用 WASD / 方向键',
-      '轮间推理用 token 余额接入装备，再用样本训练。R 重置',
-      '点「闯关」打怪升级。空格仍是原来的单机无尽',
+      '每 6 秒一轮。走过的路变成回声，碰到就输了',
+      '空格开始无尽。闯关、打怪用同一个角色',
+      '轮间用 token 训练装备。头、身、饰品都能穿',
     ];
-    lines.forEach((s, i) => x.fillText(s, LW / 2, LH / 2 - u * 0.04 + i * u * 0.048));
+    lines.forEach((s, i) => x.fillText(s, LW / 2, 96 + i * 24));
+    const roles = Rules.CAST;
+    const cardW = 210;
+    const cardH = 250;
+    const gap = 28;
+    const total = roles.length * cardW + (roles.length - 1) * gap;
+    const x0 = (LW - total) / 2;
+    const y0 = 180;
+    roles.forEach((role, i) => {
+      const hx = x0 + i * (cardW + gap);
+      const picked = role.id === roleId;
+      x.fillStyle = picked ? 'rgba(255,255,255,.08)' : 'rgba(255,255,255,.03)';
+      x.strokeStyle = picked ? '#fff' : 'rgba(255,255,255,.35)';
+      x.lineWidth = picked ? 2 : 1;
+      x.strokeRect(hx, y0, cardW, cardH);
+      x.fillRect(hx, y0, cardW, cardH);
+      const footX = hx + cardW / 2;
+      const footY = y0 + 150;
+      if (!drawSprite(x, footX, footY, role.id, 0, false, 1, 2)) {
+        x.fillStyle = role.color || '#7ad7ff';
+        x.beginPath();
+        x.arc(footX, footY - 36, 28, 0, Math.PI * 2);
+        x.fill();
+      }
+      x.fillStyle = '#fff';
+      x.font = 'bold 18px ui-sans-serif,system-ui,sans-serif';
+      x.textAlign = 'center';
+      x.fillText(role.name, footX, y0 + 188);
+      x.font = '13px ui-sans-serif,system-ui,sans-serif';
+      x.fillStyle = 'rgba(255,255,255,.78)';
+      x.fillText(role.blurb, footX, y0 + 210);
+      x.fillText((role.slots || []).map(slot => Rules.SLOT_NAME[slot]).join(' · '), footX, y0 + 232);
+      castHits.push({ x: hx, y: y0, w: cardW, h: cardH, id: role.id });
+    });
+    x.textAlign = 'center';
   }
   if (state === 'over') {
     x.fillStyle = 'rgba(6,8,18,.58)';
@@ -1532,7 +1642,7 @@ function draw() {
       ? ('推理  ' + tokenText(currentCoins()) + '  ' + (currentShopLeft() / 60).toFixed(1) + 's' + coreBit + campBit)
       : (state === 'clear'
         ? ((gearMsg || '过关') + '  ' + tokenText(currentCoins()) + campBit)
-        : ('第 ' + round + ' 轮  得分 ' + score + '  ' + tokenText(currentCoins()) + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (hp > 0 && maxHp > 1 ? '  HP' + hp : '') + (shield ? '  盾' + shield : '') + coreBit + noiseBit + campBit + (protecting() ? '  离开路线' : '') + (questBit ? '  ' + questBit : '')));
+        : ('第 ' + round + ' 轮  得分 ' + score + '  ' + tokenText(currentCoins()) + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (hp > 0 && maxHp > 1 ? '  HP' + hp : '') + (shield ? '  盾' + shield : '') + '  ' + ((Rules.roleById(roleId) || {}).name || '') + coreBit + noiseBit + campBit + (protecting() ? '  离开路线' : '') + (questBit ? '  ' + questBit : '')));
     ui.textContent = bits + (gearMsg && state === 'play' ? '  ' + gearMsg : '') + (NET.active ? NET.hudSuffix() : '');
   } else ui.textContent = '';
   const dock = document.getElementById('dock');
@@ -1565,6 +1675,9 @@ window.__echo = function () {
     flicker: Math.floor(t / 2) % 2 === 0 ? 0.5 : 0.15,
     footDash: protecting(),
     coins: currentCoins(),
+    role: roleId,
+    castHits: castHits.map(h => ({ x: h.x, y: h.y, w: h.w, h: h.h, id: h.id })),
+    sheet: !!(sheets[roleId] && sheets[roleId].complete && sheets[roleId].naturalWidth),
     campaign: campaignOn,
     stage: stageId,
     stageName: stageLabel,
@@ -1612,7 +1725,7 @@ addEventListener('keydown', e => {
   }
   if (k === 'r' && state === 'play') useReset();
   if (state === 'shop' && k >= '4' && k <= '6') {
-    const slot = Rules.SLOTS[+k - 4];
+    const slot = Rules.slotsOf(roleId)[+k - 4];
     const worn = wornGear().filter(g => g.slot === slot)[0];
     if (worn) actShop({ act: 'train', uid: worn.uid });
   }
@@ -1639,6 +1752,11 @@ c.onmousedown = e => {
     mouse = null;
     return;
   }
+  if (state === 'menu' && castHitAt(mouse)) {
+    pickRole(castHitAt(mouse).id);
+    mouse = null;
+    return;
+  }
   if (state === 'shop') {
     const hit = shopHitAt(mouse);
     if (hit) { actShop(hit); mouse = null; }
@@ -1657,6 +1775,12 @@ c.ontouchstart = e => {
     const hit = boardHitAt(mouse);
     if (hit) actBoard(hit);
     else board = '';
+    mouse = null;
+    e.preventDefault();
+    return;
+  }
+  if (state === 'menu' && castHitAt(mouse)) {
+    pickRole(castHitAt(mouse).id);
     mouse = null;
     e.preventDefault();
     return;
@@ -1837,7 +1961,7 @@ NET.beforeDraw = function () {
   banner = s.banner || 0;
   stars = (s.stars || []).map(q => ({ x: q.x, y: q.y }));
   ghosts = (s.ghosts || []).map(g => g.pts || []);
-  this.ghostMeta = (s.ghosts || []).map(g => ({ name: g.name, color: g.color, ownerId: g.ownerId }));
+  this.ghostMeta = (s.ghosts || []).map(g => ({ name: g.name, color: g.color, ownerId: g.ownerId, role: g.role || 'echo' }));
   const mine = this.myPlayer();
   this.color = mine && mine.color;
   score = mine ? mine.score : 0;
@@ -1854,6 +1978,7 @@ NET.beforeDraw = function () {
     hp = mine.hp || 0;
     maxHp = mine.maxHp || 1;
     shield = mine.shield || 0;
+    if (mine.role) roleId = mine.role;
   }
   if (s.state === 'play') state = 'play';
   else if (s.state === 'shop') state = 'shop';
@@ -1949,20 +2074,27 @@ NET.drawActors = function () {
     let px = pl.x;
     let py = pl.y;
     if (pl.id === this.id && p && (pl.mode === 'play' || pl.mode === 'lobby')) { px = p.x; py = p.y; }
+    const role = Rules.roleById(pl.role || 'echo');
+    const sheeted = !!(role && role.sheet);
     if (!(pl.id === this.id && pl.mode === 'play')) {
-      x.save();
-      x.globalAlpha = pl.mode === 'dead' ? 0.45 : 1;
-      x.fillStyle = pl.color;
-      x.beginPath();
-      x.arc(px, py, bodyR(), 0, Math.PI * 2);
-      x.fill();
-      x.restore();
+      const moving = Math.hypot(pl.vx, pl.vy) > 8;
+      const painted = drawSprite(x, px, py, pl.role || 'echo', faceRow(pl.id, pl.vx, pl.vy), moving, pl.mode === 'dead' ? 0.45 : 1, 1);
+      if (!painted) {
+        x.save();
+        x.globalAlpha = pl.mode === 'dead' ? 0.45 : 1;
+        x.fillStyle = pl.color;
+        x.beginPath();
+        x.arc(px, py, bodyR(), 0, Math.PI * 2);
+        x.fill();
+        x.restore();
+      }
     }
     x.fillStyle = '#fff';
     x.font = '12px ui-sans-serif,system-ui,sans-serif';
     x.textAlign = 'center';
-    x.fillText(pl.name, px, py - bodyR() - 6);
-    drawBadges(px, py, pl.gear || []);
+    const nameY = sheeted ? py - Rules.SPRITE.footY - 4 : py - bodyR() - 6;
+    x.fillText(pl.name, px, nameY);
+    drawBadges(px, py, pl.gear || [], sheeted ? py - Rules.SPRITE.footY - 16 : null);
     drawPips(px, py, pl.hp, pl.maxHp, pl.shield);
   }
   const meta = this.ghostMeta || [];
@@ -2063,7 +2195,7 @@ NET.connect = function () {
   this.note('正在连接…');
   this.updateChrome();
   const self = this;
-  ws.onopen = function () { self.send({ type: 'hello', name }); };
+  ws.onopen = function () { self.send({ type: 'hello', name, role: roleId }); };
   ws.onmessage = function (ev) {
     let msg;
     try { msg = JSON.parse(ev.data); } catch (e) { return; }

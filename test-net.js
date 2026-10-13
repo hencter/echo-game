@@ -5,13 +5,13 @@ function assert(cond, msg) {
   if (!cond) throw new Error(msg);
 }
 
-function openClient(port, room, name) {
+function openClient(port, room, name, role) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket('ws://127.0.0.1:' + port + '/ws?room=' + room);
     const client = { ws, last: null };
     ws.on('message', (buf) => { client.last = JSON.parse(buf.toString()); });
     ws.on('open', () => {
-      ws.send(JSON.stringify({ type: 'hello', name }));
+      ws.send(JSON.stringify({ type: 'hello', name, role: role || '' }));
       resolve(client);
     });
     ws.on('error', reject);
@@ -68,6 +68,7 @@ async function main() {
     await testGear(app, port);
     await testItems(app, port);
     await testCampaign(app, port);
+    await testRoles(app, port);
     console.log('net rules ok');
   } finally {
     await app.close();
@@ -257,6 +258,7 @@ async function testGear(app, port) {
   assert(!(me(a.last).gear || []).length, 'play rejects a purchase');
   for (let i = 0; i < 360; i++) app.tickAll();
   await waitFor(a, (snap) => snap.state === 'shop' && (snap.offers || []).length === 3, 'gear shop');
+  await waitFor(b, (snap) => snap.state === 'shop' && (snap.offers || []).length === 3, 'gear shop for the other player');
   assert(a.last.offers[0].price === 8 && a.last.offers[0].tierLabel === 'v1', 'server rack starts with a v1 stipend piece');
   assert(a.last.offers[1].uid !== b.last.offers[1].uid, 'the two racks are not the same');
   const offer = a.last.offers[0];
@@ -442,6 +444,41 @@ async function testCampaign(app, port) {
   for (let i = 0; i < 4; i++) app.tickAll();
   await flush();
   assert(me(a.last).mode === 'play' && me(a.last).hp === 3, 'the opening dash does not spend a heart');
+  a.ws.close();
+  b.ws.close();
+  await flush();
+}
+
+async function testRoles(app, port) {
+  const rules = require('./shared');
+  const fs = require('fs');
+  const whale = rules.roleById('whale');
+  const echo = rules.roleById('echo');
+  assert(whale && whale.name === '巨鲸' && whale.sheet === 'assets/whale.png', 'the whale is a config row');
+  assert(echo && !echo.sheet && echo.slots.join(',') === 'head,body,accessory', 'the original body keeps every slot');
+  assert(whale.slots.join(',') === 'head,body,accessory', 'the whale can wear head, body, and accessory');
+  assert(rules.SPRITE.frame === 48 && rules.SPRITE.cols === 6 && rules.SPRITE.rows === 4, 'sheet is 6 by 4 frames');
+  assert(rules.SPRITE.idle === 2 && rules.SPRITE.walk === 4, 'two idle frames then four walk frames');
+  assert(rules.SPRITE.footX === 24 && rules.SPRITE.footY === 46, 'the foot stays at (24, 46)');
+  assert(rules.SPRITE.dirs.join(',') === 'down,left,right,up', 'rows run down, left, right, up');
+  const png = fs.readFileSync(require('path').join(__dirname, 'assets/whale.png'));
+  assert(png.readUInt32BE(16) === 288 && png.readUInt32BE(20) === 192, 'the placeholder sheet is 288 by 192');
+
+  const a = await openClient(port, 'cast', '鲸甲', 'whale');
+  const b = await openClient(port, 'cast', '鲸乙', 'echo');
+  await waitFor(a, (snap) => snap.players.length === 2 && me(snap).role === 'whale', 'whale joined');
+  await waitFor(b, (snap) => me(snap).role === 'echo' && other(snap).role === 'whale', 'peer sees the whale');
+  assert(other(a.last).role === 'echo', '甲 sees 乙 as the original body');
+  send(a, { type: 'role', id: 'nope' });
+  await flush();
+  app.tickAll();
+  await flush();
+  assert(me(a.last).role === 'whale', 'an unknown role is ignored');
+  assert((a.last.events || []).some((ev) => ev.reason === 'role'), 'unknown role is denied');
+  send(b, { type: 'role', id: 'whale' });
+  await flush();
+  app.tickAll();
+  await waitFor(a, (snap) => other(snap).role === 'whale' && me(snap).role === 'whale', '乙 switched and both clients agree');
   a.ws.close();
   b.ws.close();
   await flush();
