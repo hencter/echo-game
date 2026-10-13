@@ -9,10 +9,20 @@
   html,body{margin:0;height:100%;background:#0b0d1a;color:#eee;font-family:ui-sans-serif,system-ui,sans-serif;overflow:hidden;touch-action:none;user-select:none}
   canvas{display:block;width:100%;height:100%}
   #ui{position:fixed;left:12px;top:8px;font-size:16px;pointer-events:none;text-shadow:0 1px 2px #000}
+  #dock{position:fixed;left:0;right:0;bottom:22px;z-index:3;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+  #dock button{pointer-events:auto;background:transparent;color:#fff;border:1px solid rgba(255,255,255,.45);border-radius:0;padding:8px 16px;font:15px ui-sans-serif,system-ui,sans-serif;letter-spacing:.08em;cursor:pointer}
+  #dock button:hover{border-color:#fff}
+  #dock button.quiet{border:none;letter-spacing:0;padding:0;color:rgba(255,255,255,.72)}
+  #netmsg{pointer-events:none;font-size:14px;color:rgba(255,255,255,.88);text-shadow:0 1px 2px #000}
 </style>
 </head>
 <body>
 <div id="ui"></div>
+<div id="dock">
+  <div id="netmsg"></div>
+  <button id="multi" type="button">多人同场</button>
+  <button id="leave" type="button" class="quiet" hidden>退出多人</button>
+</div>
 <canvas id="c"></canvas>
 <script>
 const c = document.getElementById('c');
@@ -43,6 +53,20 @@ let keys = {};
 let mouse = null;
 let shake = 0;
 let banner = 0;
+let NET = {
+  active: false,
+  connecting: false,
+  grace: false,
+  state: 'menu',
+  step: 0,
+  id: null,
+  color: null,
+  snap: null,
+  epoch: -1,
+  deathText: '',
+  savedBest: false,
+  ws: null,
+};
 const echoLayer = document.createElement('canvas');
 const ex = echoLayer.getContext('2d');
 
@@ -269,7 +293,13 @@ function strokeRange(ctx, pts, a, b, style, width) {
 }
 
 function protecting() {
+  if (NET.active) return NET.grace;
   return ghosts.length > 0 && t < GRACE;
+}
+
+function roundProgress() {
+  if (NET.active && NET.state === 'play') return NET.step;
+  return rec.length;
 }
 
 function ghostColor(i, a) {
@@ -347,15 +377,16 @@ function drawWorld() {
       drawFootRing(q, ghostColor(i, 1), safe);
     });
 
-    if (rec.length > 1) strokeRange(x, rec, 0, rec.length - 1, 'rgba(130,220,255,.78)', 2.6);
+    const trailColor = NET.active && NET.color && NET.fade ? NET.fade(NET.color, 0.78) : 'rgba(130,220,255,.78)';
+    if (rec.length > 1) strokeRange(x, rec, 0, rec.length - 1, trailColor, 2.6);
 
-    const warn = state === 'play' && rec.length >= STEPS - 75;
+    const warn = state === 'play' && roundProgress() >= STEPS - 75;
     if (warn) {
       const marks = [];
       ghosts.forEach(g => { if (g[0]) marks.push(g[0]); });
       if (rec[0]) marks.push(rec[0]);
       marks.forEach(q => {
-        const rad = bodyR() + unit() * 0.028 + Math.sin(rec.length / 3) * 1.5;
+        const rad = bodyR() + unit() * 0.028 + Math.sin(roundProgress() / 3) * 1.5;
         x.strokeStyle = '#ffe082';
         x.lineWidth = 2;
         x.beginPath();
@@ -372,7 +403,7 @@ function drawWorld() {
     });
 
     if (p && state !== 'menu') {
-      x.fillStyle = '#7ad7ff';
+      x.fillStyle = NET.active && NET.color ? NET.color : '#7ad7ff';
       x.shadowColor = '#6cf';
       x.shadowBlur = 18;
       x.beginPath();
@@ -390,8 +421,8 @@ function drawWorld() {
   });
 
   if (state === 'play') {
-    const left = Math.max(0, STEPS - rec.length) / 60;
-    const hot = rec.length >= STEPS - 75;
+    const left = Math.max(0, STEPS - roundProgress()) / 60;
+    const hot = roundProgress() >= STEPS - 75;
     x.fillStyle = 'rgba(255,255,255,.12)';
     x.fillRect(16, LH - 14, LW - 32, 5);
     x.fillStyle = hot ? '#ff8a80' : '#6cf';
@@ -446,9 +477,9 @@ function drawOverlay() {
     x.stroke();
     x.fillStyle = '#fff';
     x.font = 'bold ' + Math.round(u * 0.07) + 'px ui-sans-serif,system-ui,sans-serif';
-    x.fillText('撞上了过去的自己', LW / 2, by + bh * 0.38);
+    x.fillText(overHeadline(), LW / 2, by + bh * 0.38);
     x.font = Math.round(u * 0.034) + 'px ui-sans-serif,system-ui,sans-serif';
-    x.fillText('得分 ' + score + '  ·  撑过 ' + (round - 1) + ' 轮  ·  最佳 ' + best, LW / 2, by + bh * 0.62);
+    x.fillText(overDetail(), LW / 2, by + bh * 0.62);
     x.fillStyle = 'rgba(255,255,255,.8)';
     x.fillText('点击 / 空格 再来', LW / 2, by + bh * 0.84);
   }
@@ -466,8 +497,8 @@ function draw() {
   drawOverlay();
 
   if (state === 'play') {
-    const left = Math.max(0, STEPS - rec.length) / 60;
-    ui.textContent = '第 ' + round + ' 轮  得分 ' + score + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (protecting() ? '  离开路线' : '');
+    const left = Math.max(0, STEPS - roundProgress()) / 60;
+    ui.textContent = '第 ' + round + ' 轮  得分 ' + score + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (protecting() ? '  离开路线' : '') + (NET.active ? NET.hudSuffix() : '');
   } else ui.textContent = '';
 }
 
@@ -494,8 +525,21 @@ window.__echo = function () {
     steps: STEPS,
     rec0: rec[0] ? {x: rec[0].x, y: rec[0].y} : null,
     grace: protecting() ? GRACE - t : 0,
+    flicker: Math.floor(t / 2) % 2 === 0 ? 0.5 : 0.15,
+    footDash: protecting(),
   };
 };
+
+function overHeadline() {
+  if (!NET.active) return '撞上了过去的自己';
+  return NET.deathText || '这一局结束了';
+}
+
+function overDetail() {
+  if (!NET.active) return '得分 ' + score + '  ·  撑过 ' + (round - 1) + ' 轮  ·  最佳 ' + best;
+  const rows = ((NET.snap && NET.snap.players) || []).map(pl => pl.name + ' ' + pl.score);
+  return rows.join('  ·  ') + '  ·  撑过 ' + (round - 1) + ' 轮  ·  最佳 ' + best;
+}
 
 const BLOCK = new Set([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
 addEventListener('keydown', e => {
@@ -540,6 +584,390 @@ function frame(now) {
   draw();
   requestAnimationFrame(frame);
 }
+
+NET.myPlayer = function () {
+  const players = (this.snap && this.snap.players) || [];
+  for (let i = 0; i < players.length; i++) if (players[i].id === this.id) return players[i];
+  return null;
+};
+
+NET.hudSuffix = function () {
+  const n = (this.snap && this.snap.players) ? this.snap.players.length : 0;
+  return '  在线 ' + n + (this.state === 'play' && this.deathText ? '  ' + this.deathText : '');
+};
+
+NET.fade = function (hex, a) {
+  const n = parseInt(String(hex || '#7ad7ff').slice(1), 16);
+  if (!Number.isFinite(n)) return 'rgba(122,215,255,' + a + ')';
+  return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + a + ')';
+};
+
+NET.note = function (text) {
+  const el = document.getElementById('netmsg');
+  if (el) el.textContent = text || '';
+};
+
+NET.readInput = function () {
+  const ax = (keys.d || keys.arrowright ? 1 : 0) - (keys.a || keys.arrowleft ? 1 : 0);
+  const ay = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
+  const keyboard = !!(keys.d || keys.a || keys.arrowleft || keys.arrowright || keys.w || keys.s || keys.arrowup || keys.arrowdown);
+  return { type: 'input', ax, ay, mouse: mouse ? { x: mouse.x, y: mouse.y } : null, keyboard };
+};
+
+NET.send = function (msg) {
+  if (!this.ws || this.ws.readyState !== 1) return;
+  if (this.ws.bufferedAmount > 1e6) return;
+  this.ws.send(JSON.stringify(msg));
+};
+
+NET.trailOf = function (id) {
+  const trails = (this.snap && this.snap.trails) || [];
+  for (let i = 0; i < trails.length; i++) if (trails[i].id === id) return trails[i].pts || [];
+  return [];
+};
+
+NET.lockArena = function () {
+  if (LW === CAP_W && LH === CAP_H) return;
+  LW = CAP_W;
+  LH = CAP_H;
+  layout();
+};
+
+NET.applyEvents = function (events) {
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    if (ev.type === 'die' && ev.id === this.id) {
+      this.deathText = ev.self ? '撞上了自己的回声' : ('撞上了' + ev.by + '的回声');
+      boom(ev.x, ev.y, '#f55', 48);
+      beep(110, 0.5, 'sawtooth', 0.25);
+      shake = unit() * 0.02;
+    } else if (ev.type === 'die') {
+      boom(ev.x, ev.y, '#f55', 24);
+    } else if (ev.type === 'pick') {
+      boom(ev.x, ev.y, '#ffd54a', 14);
+      if (ev.id === this.id) beep(600 + Math.random() * 400, 0.1, 'triangle', 0.12);
+    } else if (ev.type === 'round') {
+      beep(330, 0.15, 'triangle', 0.16);
+      setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
+      if (p) boom(p.x, p.y, '#6cf', 24);
+      shake = unit() * 0.008;
+    }
+  }
+};
+
+NET.applySnap = function (msg) {
+  if (msg.epoch !== this.epoch) {
+    this.epoch = msg.epoch;
+    this.deathText = '';
+    const arrived = (msg.players || []).find(pl => pl.id === msg.you);
+    if (arrived && p) {
+      p.x = arrived.x;
+      p.y = arrived.y;
+      vx = arrived.vx || 0;
+      vy = arrived.vy || 0;
+    }
+  }
+  this.id = msg.you;
+  this.snap = msg;
+  this.grace = !!msg.grace;
+  this.step = msg.step || 0;
+  this.state = msg.state;
+  this.active = true;
+  this.connecting = false;
+  if (msg.events) this.applyEvents(msg.events);
+  this.lockArena();
+  this.beforeDraw();
+  this.updateChrome();
+};
+
+NET.beforeDraw = function () {
+  const s = this.snap;
+  if (!s) return;
+  this.grace = !!s.grace;
+  this.step = s.step || 0;
+  this.state = s.state;
+  t = s.t || 0;
+  round = s.round || 1;
+  banner = s.banner || 0;
+  stars = (s.stars || []).map(q => ({ x: q.x, y: q.y }));
+  ghosts = (s.ghosts || []).map(g => g.pts || []);
+  this.ghostMeta = (s.ghosts || []).map(g => ({ name: g.name, color: g.color, ownerId: g.ownerId }));
+  const mine = this.myPlayer();
+  this.color = mine && mine.color;
+  score = mine ? mine.score : 0;
+  if (s.state === 'play') state = 'play';
+  else if (s.state === 'over') state = 'over';
+  else state = 'menu';
+  if (mine && mine.mode === 'play') {
+    rec = this.trailOf(mine.id).map(q => ({ x: q.x, y: q.y }));
+    if (!p) p = { x: mine.x, y: mine.y };
+  } else if (mine && mine.mode === 'dead') {
+    rec = [];
+    p = { x: mine.x, y: mine.y };
+    vx = 0;
+    vy = 0;
+  } else if (mine && mine.mode === 'lobby') {
+    rec = [];
+    ghosts = [];
+    stars = [];
+    if (!p) p = { x: mine.x, y: mine.y };
+  } else {
+    rec = [];
+    p = null;
+  }
+  if (s.state === 'over' && !this.savedBest) {
+    this.savedBest = true;
+    if (score > best) {
+      best = score;
+      try { localStorage.echoBest = String(best); } catch (e) {}
+    }
+  }
+  if (s.state !== 'over') this.savedBest = false;
+};
+
+NET.reconcile = function () {
+  const mine = this.myPlayer();
+  if (!mine || !p || (mine.mode !== 'play' && mine.mode !== 'lobby')) return;
+  if (Math.hypot(p.x - mine.x, p.y - mine.y) > 40) {
+    p.x = mine.x;
+    p.y = mine.y;
+    vx = mine.vx || 0;
+    vy = mine.vy || 0;
+  }
+};
+
+NET.drawMark = function (q) {
+  const rad = bodyR() + unit() * 0.028 + Math.sin(roundProgress() / 3) * 1.5;
+  x.strokeStyle = '#ffe082';
+  x.lineWidth = 2;
+  x.beginPath();
+  x.arc(q.x, q.y, rad, 0, Math.PI * 2);
+  x.moveTo(q.x - rad - 4, q.y);
+  x.lineTo(q.x + rad + 4, q.y);
+  x.moveTo(q.x, q.y - rad - 4);
+  x.lineTo(q.x, q.y + rad + 4);
+  x.stroke();
+};
+
+NET.drawActors = function () {
+  if (!this.snap) return;
+  const players = this.snap.players || [];
+  for (let i = 0; i < players.length; i++) {
+    const pl = players[i];
+    if (pl.mode !== 'play' || pl.id === this.id) continue;
+    const pts = this.trailOf(pl.id);
+    if (pts.length > 1) strokeRange(x, pts, 0, pts.length - 1, this.fade(pl.color, 0.78), 2.6);
+  }
+  for (let i = 0; i < players.length; i++) {
+    const pl = players[i];
+    if (pl.mode === 'spectate') continue;
+    let px = pl.x;
+    let py = pl.y;
+    if (pl.id === this.id && p && (pl.mode === 'play' || pl.mode === 'lobby')) { px = p.x; py = p.y; }
+    if (!(pl.id === this.id && pl.mode === 'play')) {
+      x.save();
+      x.globalAlpha = pl.mode === 'dead' ? 0.45 : 1;
+      x.fillStyle = pl.color;
+      x.beginPath();
+      x.arc(px, py, bodyR(), 0, Math.PI * 2);
+      x.fill();
+      x.restore();
+    }
+    x.fillStyle = '#fff';
+    x.font = '12px ui-sans-serif,system-ui,sans-serif';
+    x.textAlign = 'center';
+    x.fillText(pl.name, px, py - bodyR() - 6);
+  }
+  const meta = this.ghostMeta || [];
+  for (let i = 0; i < ghosts.length && i < meta.length; i++) {
+    const g = ghosts[i];
+    const q = g[Math.min(Math.max(t, 0), g.length - 1)];
+    if (!q || !meta[i].name) continue;
+    x.fillStyle = '#fff';
+    x.font = '12px ui-sans-serif,system-ui,sans-serif';
+    x.textAlign = 'center';
+    x.fillText(meta[i].name, q.x, q.y - bodyR() - 8);
+  }
+  if (state === 'play' && roundProgress() >= STEPS - 75) {
+    for (let i = 0; i < players.length; i++) {
+      const pl = players[i];
+      if (pl.id === this.id || pl.mode !== 'play') continue;
+      const pts = this.trailOf(pl.id);
+      if (pts[0]) this.drawMark(pts[0]);
+    }
+  }
+};
+
+NET.updateChrome = function () {
+  const dock = document.getElementById('dock');
+  const btn = document.getElementById('multi');
+  const leave = document.getElementById('leave');
+  if (!btn) return;
+  const n = this.snap && this.snap.players ? this.snap.players.length : 0;
+  if (dock) dock.hidden = this.active && this.state === 'play';
+  if (!this.active && !this.connecting) {
+    btn.hidden = false;
+    btn.textContent = '多人同场';
+    if (leave) leave.hidden = true;
+    return;
+  }
+  if (this.connecting && !this.active) {
+    btn.hidden = false;
+    btn.textContent = '连接中…';
+    if (leave) leave.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  if (leave) leave.hidden = false;
+  btn.textContent = this.state === 'over' ? '再来一局' : ('开始对局（' + n + ' 人）');
+  this.note('同一块 960×540 · 空格或按钮开始');
+};
+
+NET.requestStart = function () {
+  if (!this.active || this.state === 'play') return;
+  const now = Date.now();
+  if (this._startAt && now - this._startAt < 300) return;
+  this._startAt = now;
+  this.send({ type: 'start' });
+};
+
+NET.leave = function () {
+  if (this.ws) this.ws.close();
+  this.ws = null;
+  this.active = false;
+  this.connecting = false;
+  this.snap = null;
+  this.grace = false;
+  this.deathText = '';
+  state = 'menu';
+  ghosts = [];
+  rec = [];
+  stars = [];
+  p = null;
+  this.note('');
+  this.updateChrome();
+};
+
+NET.connect = function () {
+  if (this.ws && (this.ws.readyState === 0 || this.ws.readyState === 1)) return;
+  if (location.protocol === 'file:') {
+    this.note('多人需要先运行 npm install && npm start，再打开 http://127.0.0.1:8787/');
+    return;
+  }
+  const params = new URLSearchParams(location.search);
+  const room = (params.get('room') || 'hall').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 24) || 'hall';
+  const name = params.get('name') || '';
+  const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
+  let ws;
+  try { ws = new WebSocket(proto + location.host + '/ws?room=' + encodeURIComponent(room)); }
+  catch (e) {
+    this.note('连不上服务器。先运行 npm start。');
+    return;
+  }
+  this.ws = ws;
+  this.connecting = true;
+  this.note('正在连接…');
+  this.updateChrome();
+  const self = this;
+  ws.onopen = function () { self.send({ type: 'hello', name }); };
+  ws.onmessage = function (ev) {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch (e) { return; }
+    if (msg && msg.type === 'snap') self.applySnap(msg);
+  };
+  ws.onclose = function () {
+    const was = self.active;
+    self.ws = null;
+    self.active = false;
+    self.connecting = false;
+    self.grace = false;
+    if (was) {
+      state = 'menu';
+      self.note('和服务器断开了。可以直接空格单人重开。');
+    } else self.note('连不上服务器。在仓库运行 npm install && npm start，再打开 http://127.0.0.1:8787/');
+    self.updateChrome();
+  };
+};
+
+const soloStep = step;
+step = function () {
+  if (!NET.active) return soloStep();
+  parts.forEach(q => { q.x += q.vx; q.y += q.vy; q.vx *= 0.96; q.vy *= 0.96; q.l--; });
+  parts = parts.filter(q => q.l > 0);
+  if (shake > 0) shake *= 0.86;
+  const input = NET.readInput();
+  const mine = NET.myPlayer();
+  if (mine && (mine.mode === 'play' || mine.mode === 'lobby')) {
+    if (!p) p = { x: mine.x, y: mine.y };
+    movePlayer();
+  }
+  NET.send(input);
+  NET.reconcile();
+};
+
+const soloDrawWorld = drawWorld;
+drawWorld = function () {
+  soloDrawWorld();
+  if (NET.active) NET.drawActors();
+};
+
+const soloDraw = draw;
+draw = function () {
+  if (NET.active) NET.beforeDraw();
+  soloDraw();
+};
+
+const soloReset = reset;
+reset = function () {
+  if (NET.active || NET.connecting) {
+    if (NET.active) NET.requestStart();
+    return;
+  }
+  soloReset();
+};
+
+const soloChoose = chooseArena;
+chooseArena = function () {
+  if (NET.active) { LW = CAP_W; LH = CAP_H; return; }
+  soloChoose();
+};
+
+document.getElementById('multi').addEventListener('click', function (e) {
+  e.stopPropagation();
+  e.preventDefault();
+  this.blur();
+  if (!NET.active && !NET.connecting) NET.connect();
+  else NET.requestStart();
+});
+document.getElementById('leave').addEventListener('click', function (e) {
+  e.stopPropagation();
+  e.preventDefault();
+  NET.leave();
+});
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'm' && !e.repeat && !NET.active && !NET.connecting && state !== 'play') NET.connect();
+  if (NET.active && !e.repeat) NET.send(NET.readInput());
+});
+addEventListener('keyup', () => {
+  if (NET.active) NET.send(NET.readInput());
+});
+
+window.__echoNet = function () {
+  return {
+    active: NET.active,
+    state: NET.state,
+    grace: NET.grace,
+    step: NET.step,
+    t,
+    round,
+    death: NET.deathText || '',
+    players: NET.snap ? NET.snap.players : [],
+    ghosts: NET.snap ? NET.snap.ghosts : [],
+    stars: NET.snap ? NET.snap.stars : [],
+  };
+};
+
 requestAnimationFrame(frame);
 </script>
 </body>
