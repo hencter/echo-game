@@ -1,0 +1,30 @@
+<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>回声 · 游戏部</title>
+<style>body{margin:0;background:#0b0d1a;color:#eee;font-family:sans-serif;overflow:hidden;touch-action:none}canvas{display:block}#ui{position:fixed;top:8px;left:12px;font-size:18px;pointer-events:none}</style></head><body>
+<div id="ui"></div><canvas id="c"></canvas><script>
+const c=document.getElementById('c'),x=c.getContext('2d'),ui=document.getElementById('ui');
+let W,H;function rs(){W=c.width=innerWidth;H=c.height=innerHeight}rs();onresize=rs;
+const ROUND=6;let AC;function beep(f,d=.1,t='sine',v=.15){try{AC=AC||new AudioContext();const o=AC.createOscillator(),g=AC.createGain();o.type=t;o.frequency.value=f;g.gain.setValueAtTime(v,AC.currentTime);g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+d);o.connect(g).connect(AC.destination);o.start();o.stop(AC.currentTime+d)}catch(e){}}
+let best=+(localStorage.echoBest||0),state='menu',p,ghosts,rec,t,round,score,stars,parts=[],keys={},mouse=null,shake=0;
+function reset(){p={x:W/2,y:H/2};ghosts=[];rec=[];t=0;round=1;score=0;stars=[];parts=[];spawn();spawn();state='play'}
+function spawn(){stars.push({x:40+Math.random()*(W-80),y:60+Math.random()*(H-100)})}
+function boom(X,Y,col,n=20){for(let i=0;i<n;i++){const a=Math.random()*6.28,s=Math.random()*5;parts.push({x:X,y:Y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,l:40,col})}}
+onkeydown=e=>{keys[e.key.toLowerCase()]=1;if((e.key==' '||e.key=='Enter')&&state!='play')reset()};onkeyup=e=>keys[e.key.toLowerCase()]=0;
+const pm=e=>{const q=e.touches?e.touches[0]:e;mouse={x:q.clientX,y:q.clientY}};
+c.onmousemove=pm;c.ontouchmove=e=>{pm(e);e.preventDefault()};c.ontouchstart=e=>{pm(e);if(state!='play')reset()};c.onmousedown=()=>{if(state!='play')reset()};
+function step(){if(state!='play')return;let dx=(keys.d||keys.arrowright?1:0)-(keys.a||keys.arrowleft?1:0),dy=(keys.s||keys.arrowdown?1:0)-(keys.w||keys.arrowup?1:0);
+if(dx||dy){const l=Math.hypot(dx,dy);p.x+=dx/l*5;p.y+=dy/l*5;mouse=null}else if(mouse){const ex=mouse.x-p.x,ey=mouse.y-p.y,l=Math.hypot(ex,ey);if(l>2){const s=Math.min(5,l);p.x+=ex/l*s;p.y+=ey/l*s}}
+p.x=Math.max(10,Math.min(W-10,p.x));p.y=Math.max(10,Math.min(H-10,p.y));rec.push({x:p.x,y:p.y});t++;
+for(const g of ghosts){const q=g[Math.min(t,g.length-1)];if(Math.hypot(q.x-p.x,q.y-p.y)<16){state='over';shake=20;boom(p.x,p.y,'#f55',60);beep(110,.5,'sawtooth',.25);if(score>best){best=score;localStorage.echoBest=best}return}}
+stars=stars.filter(s=>{if(Math.hypot(s.x-p.x,s.y-p.y)<20){score+=10*round;boom(s.x,s.y,'#ffd54a');beep(600+Math.random()*400,.12,'triangle');return false}return true});while(stars.length<2+Math.min(round,4))spawn();
+if(t>=ROUND*60){ghosts.push(rec);rec=[];t=0;round++;score+=50;beep(330,.15);setTimeout(()=>beep(495,.2),120);boom(p.x,p.y,'#6cf',30);shake=6}}
+function draw(){x.save();if(shake>0){x.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);shake*=.9}x.fillStyle='rgba(11,13,26,.35)';x.fillRect(-20,-20,W+40,H+40);
+if(state!='menu'){ghosts.forEach((g,i)=>{const n=Math.min(t,g.length-1);x.strokeStyle='rgba(255,90,140,.12)';x.beginPath();for(let k=n;k<Math.min(n+40,g.length);k++)x.lineTo(g[k].x,g[k].y);x.stroke();const q=g[n];x.fillStyle='hsla('+(330+i*20)+',90%,60%,.85)';x.beginPath();x.arc(q.x,q.y,10,0,7);x.fill()});
+stars.forEach(s=>{x.fillStyle='#ffd54a';x.beginPath();x.arc(s.x,s.y,7+Math.sin(Date.now()/150)*2,0,7);x.fill()});
+if(state=='play'){x.fillStyle='#6cf';x.shadowColor='#6cf';x.shadowBlur=20;x.beginPath();x.arc(p.x,p.y,10,0,7);x.fill();x.shadowBlur=0;x.fillStyle='#6cf';x.fillRect(0,H-6,W*t/(ROUND*60),6)}}
+parts=parts.filter(q=>{q.x+=q.vx;q.y+=q.vy;q.vx*=.95;q.vy*=.95;q.l--;x.globalAlpha=q.l/40;x.fillStyle=q.col;x.fillRect(q.x,q.y,3,3);x.globalAlpha=1;return q.l>0});x.restore();
+x.fillStyle='#fff';x.textAlign='center';
+if(state=='menu'){x.font='bold 48px sans-serif';x.fillText('回 声',W/2,H/2-90);x.font='18px sans-serif';['每 6 秒一轮，收集金星','轮结束后，你刚才走过的路线会变成「回声幽灵」重放','碰到任何一个过去的自己就输了 —— 你的敌人全是你自己','鼠标/触摸跟随，或 WASD/方向键移动','点击 / 空格 开始'].forEach((s,i)=>x.fillText(s,W/2,H/2-30+i*30))}
+if(state=='over'){x.font='bold 40px sans-serif';x.fillText('撞上了过去的自己',W/2,H/2-30);x.font='20px sans-serif';x.fillText('得分 '+score+' · 撑过 '+(round-1)+' 轮 · 最佳 '+best,W/2,H/2+10);x.fillText('点击 / 空格 再来',W/2,H/2+45)}
+ui.textContent=state=='play'?`第 ${round} 轮  得分 ${score}  回声 ${ghosts.length}  最佳 ${best}`:''}
+(function loop(){step();draw();requestAnimationFrame(loop)})();
+</script></body></html>
