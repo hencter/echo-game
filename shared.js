@@ -21,57 +21,117 @@
 
   const SLOTS = ['head', 'body', 'accessory'];
   const SLOT_NAME = { head: '头', body: '身', accessory: '饰品' };
-  const GEAR_ORDER = ['boots', 'shield', 'glasses', 'magnet', 'dash', 'helm', 'clover'];
-
-  const GEAR = {
-    boots: {
-      id: 'boots', name: '轻风靴', slot: 'body', mark: '靴', color: '#b8ff7a', price: 8,
-      levels: [{ speed: 1.18 }, { speed: 1.36 }, { speed: 1.55 }],
+  const TIERS = [
+    { id: 'v1', label: 'v1', params: '7M' },
+    { id: 'v2', label: 'v2', params: '70M' },
+    { id: 'v3', label: 'v3', params: '7B' },
+    { id: 'frontier', label: '前沿模型', params: '未公开' },
+  ];
+  const TRAIN = [
+    { cost: 18, samples: 1 },
+    { cost: 32, samples: 2 },
+    { cost: 48, samples: 3 },
+  ];
+  const HALLU = [16, 10, 6, 2];
+  const AFFIX = {
+    speed: {
+      slot: 'body', mark: '靴', noun: '注意力靴', color: '#b8ff7a',
+      tiers: [{ speed: 1.12 }, { speed: 1.24 }, { speed: 1.38 }, { speed: 1.55 }],
+      line: function (row) { return '移速 +' + Math.round((row.speed - 1) * 100) + '%'; },
     },
     shield: {
-      id: 'shield', name: '回声护盾', slot: 'accessory', mark: '盾', color: '#7ad7ff', price: 15,
-      levels: [{ blocks: 1 }, { blocks: 2 }, { blocks: 3 }],
+      slot: 'accessory', mark: '盾', noun: '对齐盾', color: '#7ad7ff',
+      tiers: [{ blocks: 1 }, { blocks: 2 }, { blocks: 3 }, { blocks: 4 }],
+      line: function (row) { return '护盾 ' + row.blocks + ' 次'; },
     },
-    glasses: {
-      id: 'glasses', name: '淡影眼镜', slot: 'head', mark: '镜', color: '#d4a5ff', price: 12,
-      levels: [{ warn: 130 }, { warn: 190 }, { warn: 250 }],
+    warn: {
+      slot: 'head', mark: '镜', noun: '推理镜', color: '#d4a5ff',
+      tiers: [{ warn: 130 }, { warn: 190 }, { warn: 250 }, { warn: 310 }],
+      line: function (row) { return '推理提前 ' + (row.warn / 60).toFixed(1) + ' 秒'; },
     },
     magnet: {
-      id: 'magnet', name: '星星磁铁', slot: 'accessory', mark: '磁', color: '#ffd27a', price: 10,
-      levels: [
+      slot: 'accessory', mark: '磁', noun: '检索磁', color: '#ffd27a',
+      tiers: [
         { magnet: 1.8, attract: 90, pull: 10 },
         { magnet: 2.5, attract: 140, pull: 16 },
         { magnet: 3.4, attract: 200, pull: 24 },
+        { magnet: 4.2, attract: 260, pull: 32 },
       ],
+      line: function (row) { return '检索 ×' + row.magnet + '，吸引 ' + row.attract + 'px'; },
     },
     dash: {
-      id: 'dash', name: '冲刺手套', slot: 'body', mark: '冲', color: '#ff8ad4', price: 12,
-      levels: [
+      slot: 'body', mark: '冲', noun: '思维链手套', color: '#ff8ad4',
+      tiers: [
         { dash: { frames: 8, speed: 2.6, cd: 180 } },
         { dash: { frames: 10, speed: 3.0, cd: 120 } },
         { dash: { frames: 12, speed: 3.4, cd: 72 } },
+        { dash: { frames: 14, speed: 3.8, cd: 48 } },
       ],
+      line: function (row) { return '冲刺 ' + row.dash.frames + ' 步 ×' + row.dash.speed; },
     },
-    helm: {
-      id: 'helm', name: '铁头盔', slot: 'head', mark: '盔', color: '#d8d2c8', price: 10,
-      levels: [{ hp: 1 }, { hp: 2 }, { hp: 3 }],
+    hp: {
+      slot: 'head', mark: '盔', noun: '参数盔', color: '#d8d2c8',
+      tiers: [{ hp: 1 }, { hp: 2 }, { hp: 3 }, { hp: 4 }],
+      line: function (row) { return '参数生命 +' + row.hp; },
     },
-    clover: {
-      id: 'clover', name: '幸运草', slot: 'accessory', mark: '草', color: '#7affd4', price: 14,
-      levels: [{ score: 1.5 }, { score: 2 }, { score: 3 }],
+    score: {
+      slot: 'accessory', mark: '草', noun: '奖励草', color: '#7affd4',
+      tiers: [{ score: 1.5 }, { score: 2 }, { score: 2.6 }, { score: 3.4 }],
+      line: function (row) { return '得分 ×' + row.score; },
     },
   };
+  const CORES = {
+    predict: { reward: 1.5, power: [28, 40, 56, 72], blurb: '预判核：回声沿你的速度提前走' },
+    evade: { reward: 1.35, power: [24, 36, 50, 68], blurb: '回避核：回声绕开你，换一条走法' },
+  };
+  const AFFIX_KEYS = ['speed', 'shield', 'warn', 'magnet', 'dash', 'hp', 'score'];
+  const PREFIXES = ['微调版', '蒸馏版', '量化版', '对齐版', '温度版', '检索版', '思维链'];
 
   const REASON = {
     not_enough_T: 'T 币不够',
     bag_full: '背包满了',
-    max_level: '已经 3 级',
+    max_tier: '已经是前沿模型',
     not_owned: '还没有这件',
-    owned: '已经有了，去升级',
-    shop_only: '只能在轮间商店操作',
+    shop_only: '只能在轮间推理时操作',
     unknown: '没有这件装备',
     bad_slot: '槽位不对',
+    need_samples: '对局样本不够，再活过几轮',
   };
+
+  let namer = defaultNamer;
+
+  function defaultNamer(ctx) {
+    const prefix = PREFIXES[Math.floor(ctx.rng() * PREFIXES.length)];
+    let name = prefix + '·' + ctx.noun;
+    if (ctx.core === 'predict') name += '·预判核';
+    else if (ctx.core === 'evade') name += '·回避核';
+    return name;
+  }
+
+  function setNamer(fn) {
+    namer = typeof fn === 'function' ? fn : defaultNamer;
+  }
+
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return function () {
+      a |= 0;
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function mixSeed(seed, round, who, index) {
+    const text = String(who) + ':' + round + ':' + index + ':' + (seed >>> 0);
+    let h = 2166136261;
+    for (let i = 0; i < text.length; i++) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+  }
 
   function unit(w, h) {
     return Math.min(w, h);
@@ -164,20 +224,160 @@
     return {
       t: 0,
       bag: [],
+      stock: [],
       equipped: { head: null, body: null, accessory: null },
     };
   }
 
-  function findOwned(gear, id) {
+  function findOwned(gear, uid) {
     for (let i = 0; i < SLOTS.length; i++) {
       const slot = SLOTS[i];
       const item = gear.equipped[slot];
-      if (item && item.id === id) return { where: 'equipped', slot, item };
+      if (item && item.uid === uid) return { where: 'equipped', slot: slot, item: item };
     }
     for (let i = 0; i < gear.bag.length; i++) {
-      if (gear.bag[i].id === id) return { where: 'bag', index: i, item: gear.bag[i] };
+      if (gear.bag[i].uid === uid) return { where: 'bag', index: i, item: gear.bag[i] };
     }
     return null;
+  }
+
+  function priceOf(item) {
+    let price = 8;
+    if (item.affixes.length > 1) price += 6;
+    if (item.core) price += 8;
+    if (item.negative) price -= 3;
+    return Math.max(6, price);
+  }
+
+  function rollPiece(seed, force) {
+    const spec = force || {};
+    const rng = mulberry32(seed >>> 0);
+    const primary = spec.primary || AFFIX_KEYS[Math.floor(rng() * AFFIX_KEYS.length)];
+    let extra = null;
+    if (Object.prototype.hasOwnProperty.call(spec, 'extra')) extra = spec.extra;
+    else if (rng() < 0.45) {
+      const rest = AFFIX_KEYS.filter(function (key) { return key !== primary; });
+      extra = rest[Math.floor(rng() * rest.length)];
+    }
+    let negative = null;
+    if (Object.prototype.hasOwnProperty.call(spec, 'negative')) negative = spec.negative;
+    else if (rng() < 0.35) negative = 'hallucination';
+    let core = null;
+    if (Object.prototype.hasOwnProperty.call(spec, 'core')) core = spec.core;
+    else if (rng() < 0.28) core = rng() < 0.5 ? 'predict' : 'evade';
+    const tier = spec.tier | 0;
+    const affixes = [primary];
+    if (extra && extra !== primary && AFFIX[extra]) affixes.push(extra);
+    const base = AFFIX[primary];
+    const item = {
+      uid: 'g' + (seed >>> 0).toString(36),
+      seed: seed >>> 0,
+      slot: base.slot,
+      tier: Math.max(0, Math.min(3, tier)),
+      affixes: affixes,
+      negative: negative || null,
+      core: core || null,
+      samples: 0,
+      mark: base.mark,
+      color: core ? '#ffcc66' : base.color,
+    };
+    item.price = priceOf(item);
+    item.name = namer({
+      rng: rng,
+      primary: primary,
+      affixes: affixes,
+      tier: item.tier,
+      core: item.core,
+      negative: item.negative,
+      noun: base.noun,
+    });
+    return item;
+  }
+
+  function rollShop(seed, round, who) {
+    const clean = rollPiece(mixSeed(seed, round, who, 0), { extra: null, core: null, negative: null });
+    return [
+      clean,
+      rollPiece(mixSeed(seed, round, who, 1)),
+      rollPiece(mixSeed(seed, round, who, 2)),
+    ];
+  }
+
+  function openStock(gear, seed, round, who) {
+    gear.stock = rollShop(seed, round, who);
+  }
+
+  function trainQuote(item) {
+    if (!item || item.tier >= 3) return null;
+    const row = TRAIN[item.tier];
+    return { cost: row.cost, samples: row.samples, next: TIERS[item.tier + 1].label };
+  }
+
+  function linesOf(item) {
+    const tier = item.tier || 0;
+    const lines = [];
+    for (let i = 0; i < item.affixes.length; i++) {
+      const def = AFFIX[item.affixes[i]];
+      if (def) lines.push(def.line(def.tiers[tier]));
+    }
+    if (item.negative === 'hallucination') lines.push('幻觉 噪声 ' + HALLU[tier] + 'px');
+    if (item.core && CORES[item.core]) {
+      lines.push(CORES[item.core].blurb + ' ' + CORES[item.core].power[tier] + 'px');
+    }
+    lines.push(TIERS[tier].label + ' · 参数量 ' + TIERS[tier].params);
+    return lines;
+  }
+
+  function viewItem(item) {
+    const quote = trainQuote(item);
+    return {
+      uid: item.uid,
+      slot: item.slot,
+      slotName: SLOT_NAME[item.slot],
+      name: item.name,
+      mark: item.mark,
+      color: item.color,
+      tier: item.tier,
+      tierLabel: TIERS[item.tier].label,
+      params: TIERS[item.tier].params,
+      affixes: item.affixes.slice(),
+      negative: item.negative,
+      core: item.core,
+      samples: item.samples || 0,
+      price: item.price,
+      lines: linesOf(item),
+      trainCost: quote ? quote.cost : 0,
+      trainSamples: quote ? quote.samples : 0,
+      trainNext: quote ? quote.next : '',
+    };
+  }
+
+  function applyItem(stats, item) {
+    if (!item) return;
+    const tier = item.tier || 0;
+    const affixes = item.affixes || [];
+    for (let i = 0; i < affixes.length; i++) {
+      const def = AFFIX[affixes[i]];
+      const row = def && def.tiers[tier];
+      if (!row) continue;
+      if (row.speed) stats.speed = Math.max(stats.speed, row.speed);
+      if (row.blocks) stats.blocks += row.blocks;
+      if (row.warn) stats.warn = Math.max(stats.warn, row.warn);
+      if (row.magnet) stats.magnet = Math.max(stats.magnet, row.magnet);
+      if (row.attract) stats.attract = Math.max(stats.attract, row.attract);
+      if (row.pull) stats.pull = Math.max(stats.pull, row.pull);
+      if (row.dash && (!stats.dash || row.dash.cd < stats.dash.cd)) stats.dash = row.dash;
+      if (row.hp) stats.bonusHp += row.hp;
+      if (row.score) stats.score = Math.max(stats.score, row.score);
+    }
+    if (item.negative === 'hallucination') stats.noise = Math.max(stats.noise, HALLU[tier]);
+    if (item.core && CORES[item.core]) {
+      const power = CORES[item.core].power[tier];
+      if (!stats.core || power > stats.core.power) {
+        stats.core = { kind: item.core, lead: power, dodge: power, power: power };
+      }
+      stats.reward = Math.max(stats.reward, CORES[item.core].reward);
+    }
   }
 
   function statsOf(gear) {
@@ -191,87 +391,58 @@
       dash: null,
       bonusHp: 0,
       score: 1,
+      reward: 1,
+      noise: 0,
+      core: null,
       maxHp: 1,
     };
-    for (let i = 0; i < SLOTS.length; i++) {
-      const item = gear.equipped[SLOTS[i]];
-      if (!item) continue;
-      const def = GEAR[item.id];
-      const lv = def && def.levels[item.level - 1];
-      if (!lv) continue;
-      if (lv.speed) stats.speed = lv.speed;
-      if (lv.blocks) stats.blocks = lv.blocks;
-      if (lv.warn) stats.warn = lv.warn;
-      if (lv.magnet) stats.magnet = lv.magnet;
-      if (lv.attract) stats.attract = lv.attract;
-      if (lv.pull) stats.pull = lv.pull;
-      if (lv.dash) stats.dash = lv.dash;
-      if (lv.hp) stats.bonusHp = lv.hp;
-      if (lv.score) stats.score = lv.score;
-    }
+    for (let i = 0; i < SLOTS.length; i++) applyItem(stats, gear.equipped[SLOTS[i]]);
     stats.maxHp = 1 + stats.bonusHp;
     return stats;
-  }
-
-  function describe(id, level) {
-    const def = GEAR[id];
-    const lv = def && def.levels[level - 1];
-    if (!lv) return '';
-    if (id === 'boots') return '移速 ×' + lv.speed.toFixed(2);
-    if (id === 'shield') return '每轮抵挡 ' + lv.blocks + ' 次回声';
-    if (id === 'glasses') return '提示提前到轮末 ' + (lv.warn / 60).toFixed(1) + ' 秒';
-    if (id === 'magnet') return '拾取 ×' + lv.magnet + '，吸引 ' + lv.attract + 'px';
-    if (id === 'dash') return '冲刺 ' + lv.dash.frames + ' 步 ×' + lv.dash.speed + '，冷却 ' + (lv.dash.cd / 60).toFixed(1) + ' 秒';
-    if (id === 'helm') return '最大生命 ' + (1 + lv.hp);
-    if (id === 'clover') return '得分 ×' + lv.score;
-    return '';
   }
 
   function ok() { return { ok: true, reason: '' }; }
   function fail(reason) { return { ok: false, reason: reason }; }
 
-  function buy(gear, id) {
-    const def = GEAR[id];
-    if (!def) return fail('unknown');
-    if (findOwned(gear, id)) return fail('owned');
-    if (gear.t < def.price) return fail('not_enough_T');
-    const item = { id: id, level: 1 };
-    if (!gear.equipped[def.slot]) {
-      gear.t -= def.price;
-      gear.equipped[def.slot] = item;
+  function buy(gear, uid) {
+    const index = (gear.stock || []).findIndex(function (item) { return item.uid === uid; });
+    if (index < 0) return fail('unknown');
+    const item = gear.stock[index];
+    if (gear.t < item.price) return fail('not_enough_T');
+    if (!gear.equipped[item.slot]) {
+      gear.t -= item.price;
+      gear.stock.splice(index, 1);
+      gear.equipped[item.slot] = item;
       return ok();
     }
     if (gear.bag.length >= BAG) return fail('bag_full');
-    gear.t -= def.price;
+    gear.t -= item.price;
+    gear.stock.splice(index, 1);
     gear.bag.push(item);
     return ok();
   }
 
-  function upgrade(gear, id) {
-    const owned = findOwned(gear, id);
+  function train(gear, uid) {
+    const owned = findOwned(gear, uid);
     if (!owned) return fail('not_owned');
-    if (owned.item.level >= 3) return fail('max_level');
-    const cost = GEAR[id].price * (owned.item.level + 1);
-    if (gear.t < cost) return fail('not_enough_T');
-    gear.t -= cost;
-    owned.item.level += 1;
+    const quote = trainQuote(owned.item);
+    if (!quote) return fail('max_tier');
+    if ((owned.item.samples || 0) < quote.samples) return fail('need_samples');
+    if (gear.t < quote.cost) return fail('not_enough_T');
+    gear.t -= quote.cost;
+    owned.item.samples -= quote.samples;
+    owned.item.tier += 1;
     return ok();
   }
 
-  function buyOrUpgrade(gear, id) {
-    if (findOwned(gear, id)) return upgrade(gear, id);
-    return buy(gear, id);
-  }
-
-  function equip(gear, id) {
-    const owned = findOwned(gear, id);
+  function equip(gear, uid) {
+    const owned = findOwned(gear, uid);
     if (!owned) return fail('not_owned');
     if (owned.where === 'equipped') return ok();
-    const def = GEAR[id];
-    const prev = gear.equipped[def.slot];
+    const prev = gear.equipped[owned.item.slot];
     gear.bag.splice(owned.index, 1);
     if (prev) gear.bag.push(prev);
-    gear.equipped[def.slot] = owned.item;
+    gear.equipped[owned.item.slot] = owned.item;
     return ok();
   }
 
@@ -285,76 +456,68 @@
     return ok();
   }
 
+  function noteSamples(gear) {
+    for (let i = 0; i < SLOTS.length; i++) {
+      const item = gear.equipped[SLOTS[i]];
+      if (item) item.samples = (item.samples || 0) + 1;
+    }
+  }
+
+  function echoAt(pts, t, wearer) {
+    if (!pts || !pts.length) return null;
+    const index = Math.min(Math.max(0, t | 0), pts.length - 1);
+    const q = pts[index];
+    if (!q) return null;
+    let x = q.x;
+    let y = q.y;
+    const core = wearer && wearer.core;
+    if (core && core.kind === 'predict') {
+      const vx = wearer.vx || 0;
+      const vy = wearer.vy || 0;
+      const speed = Math.hypot(vx, vy);
+      if (speed > 1) {
+        x += vx / speed * core.lead;
+        y += vy / speed * core.lead;
+      }
+    } else if (core && core.kind === 'evade') {
+      const dx = q.x - (wearer.x || 0);
+      const dy = q.y - (wearer.y || 0);
+      const len = Math.hypot(dx, dy) || 1;
+      const dodge = core.dodge || 0;
+      x += (dx / len) * dodge * 0.45 + (-dy / len) * dodge * 0.65;
+      y += (dy / len) * dodge * 0.45 + (dx / len) * dodge * 0.65;
+    }
+    const w = wearer && wearer.w ? wearer.w : W;
+    const h = wearer && wearer.h ? wearer.h : H;
+    return {
+      x: Math.max(8, Math.min(w - 8, x)),
+      y: Math.max(8, Math.min(h - 8, y)),
+      baseX: q.x,
+      baseY: q.y,
+    };
+  }
+
+  function hallucinationNudge(step, noise, salt) {
+    if (!noise || (step % 20) !== 0) return { x: 0, y: 0 };
+    const rng = mulberry32((salt ^ Math.imul(step, 997)) >>> 0);
+    return { x: (rng() * 2 - 1) * noise, y: (rng() * 2 - 1) * noise };
+  }
+
   function publicGear(gear) {
     const out = [];
     for (let i = 0; i < SLOTS.length; i++) {
-      const slot = SLOTS[i];
-      const item = gear.equipped[slot];
-      if (!item) continue;
-      const def = GEAR[item.id];
-      out.push({
-        slot: slot,
-        id: item.id,
-        name: def.name,
-        level: item.level,
-        mark: def.mark,
-        color: def.color,
-      });
+      const item = gear.equipped[SLOTS[i]];
+      if (item) out.push(viewItem(item));
     }
     return out;
   }
 
   function bagView(gear) {
-    return gear.bag.map(function (item) {
-      const def = GEAR[item.id];
-      return {
-        id: item.id,
-        level: item.level,
-        name: def.name,
-        mark: def.mark,
-        color: def.color,
-        slot: def.slot,
-      };
-    });
+    return gear.bag.map(viewItem);
   }
 
   function offers(gear) {
-    return GEAR_ORDER.map(function (id) {
-      const def = GEAR[id];
-      const owned = findOwned(gear, id);
-      const level = owned ? owned.item.level : 0;
-      const next = Math.min(3, level + 1);
-      let action = 'buy';
-      let cost = def.price;
-      if (level >= 3) {
-        action = 'max';
-        cost = 0;
-      } else if (level > 0) {
-        action = 'upgrade';
-        cost = def.price * (level + 1);
-      }
-      return {
-        id: id,
-        name: def.name,
-        slot: def.slot,
-        slotName: SLOT_NAME[def.slot],
-        mark: def.mark,
-        color: def.color,
-        price: def.price,
-        level: level,
-        equipped: !!(owned && owned.where === 'equipped'),
-        action: action,
-        cost: cost,
-        nextText: describe(id, next),
-        nowText: level ? describe(id, level) : '',
-      };
-    });
-  }
-
-  function upgradeCost(id, level) {
-    const def = GEAR[id];
-    if (!def || level < 1 || level >= 3) return 0;
-    return def.price * (level + 1);
+    return (gear.stock || []).map(viewItem);
   }
 
   return {
@@ -373,8 +536,11 @@
     SCORE_ROUND: SCORE_ROUND,
     SLOTS: SLOTS,
     SLOT_NAME: SLOT_NAME,
-    GEAR_ORDER: GEAR_ORDER,
-    GEAR: GEAR,
+    TIERS: TIERS,
+    TRAIN: TRAIN,
+    HALLU: HALLU,
+    AFFIX: AFFIX,
+    CORES: CORES,
     REASON: REASON,
     unit: unit,
     bodyR: bodyR,
@@ -386,15 +552,23 @@
     emptyGear: emptyGear,
     findOwned: findOwned,
     statsOf: statsOf,
-    describe: describe,
+    setNamer: setNamer,
+    rollPiece: rollPiece,
+    rollShop: rollShop,
+    openStock: openStock,
+    trainQuote: trainQuote,
+    linesOf: linesOf,
+    viewItem: viewItem,
+    priceOf: priceOf,
     buy: buy,
-    upgrade: upgrade,
-    buyOrUpgrade: buyOrUpgrade,
+    train: train,
     equip: equip,
     unequip: unequip,
+    noteSamples: noteSamples,
+    echoAt: echoAt,
+    hallucinationNudge: hallucinationNudge,
     publicGear: publicGear,
     bagView: bagView,
     offers: offers,
-    upgradeCost: upgradeCost,
   };
 });

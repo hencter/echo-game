@@ -69,6 +69,7 @@ let shopReady = false;
 let shopHits = [];
 let gearMsg = '';
 let gearMsgT = 0;
+let soloSeed = 1;
 let NET = {
   active: false,
   connecting: false,
@@ -197,6 +198,8 @@ function reset() {
   shake = 0;
   banner = 0;
   gear = Rules.emptyGear();
+  const seedQuery = new URLSearchParams(location.search).get('seed');
+  soloSeed = seedQuery != null && seedQuery !== '' ? (Number(seedQuery) >>> 0) : ((Math.random() * 0x100000000) >>> 0);
   hp = 1;
   maxHp = 1;
   shield = 0;
@@ -228,8 +231,11 @@ function finishRound() {
   ghosts.push(rec);
   rec = [];
   const stats = Rules.statsOf(gear);
-  score += Math.round(Rules.SCORE_ROUND * stats.score);
-  gear.t += Rules.T_ROUND;
+  const gain = stats.reward || 1;
+  score += Math.round(Rules.SCORE_ROUND * stats.score * gain);
+  gear.t += Math.round(Rules.T_ROUND * gain);
+  Rules.noteSamples(gear);
+  Rules.openStock(gear, soloSeed, round, 'solo');
   stars = [];
   state = 'shop';
   shopLeft = Rules.SHOP_STEPS;
@@ -410,6 +416,13 @@ function step() {
   if (state !== 'play') return;
 
   movePlayer();
+  const stats = Rules.statsOf(gear);
+  const nudge = Rules.hallucinationNudge(rec.length + 1, stats.noise, soloSeed);
+  if ((nudge.x || nudge.y) && p) {
+    const edge = bodyR() + 2;
+    p.x = Math.max(edge, Math.min(LW - edge, p.x + nudge.x));
+    p.y = Math.max(edge, Math.min(LH - edge, p.y + nudge.y));
+  }
   rec.push({x: p.x, y: p.y});
   t = rec.length - 1;
 
@@ -417,19 +430,19 @@ function step() {
   else if (!protecting()) {
     let hit = false;
     for (const g of ghosts) {
-      const q = g[Math.min(t, g.length - 1)];
+      const q = echoHead(g);
       if (q && Math.hypot(q.x - p.x, q.y - p.y) < collideDist()) { hit = true; break; }
     }
     if (hit && sufferEcho()) return;
   }
 
-  const stats = Rules.statsOf(gear);
   pullStars();
   const got = collectR() * stats.magnet;
   stars = stars.filter(s => {
     if (Math.hypot(s.x - p.x, s.y - p.y) < got) {
-      score += Math.round(Rules.SCORE_STAR * round * stats.score);
-      gear.t += Rules.T_STAR;
+      const gain = stats.reward || 1;
+      score += Math.round(Rules.SCORE_STAR * round * stats.score * gain);
+      gear.t += Math.round(Rules.T_STAR * gain);
       boom(s.x, s.y, '#ffd54a', 14);
       beep(600 + Math.random() * 400, 0.1, 'triangle', 0.12);
       return false;
@@ -440,6 +453,20 @@ function step() {
   while (stars.length < starGoal() && guard++ < 4) spawnStar();
 
   if (rec.length >= STEPS) finishRound();
+}
+
+function echoHead(g) {
+  if (!g || !g.length) return null;
+  const wearer = {
+    x: p ? p.x : 0,
+    y: p ? p.y : 0,
+    vx: vx,
+    vy: vy,
+    core: Rules.statsOf(gear).core,
+    w: LW,
+    h: LH,
+  };
+  return Rules.echoAt(g, Math.max(0, t), wearer);
 }
 
 function strokeRange(ctx, pts, a, b, style, width) {
@@ -470,6 +497,22 @@ function warnLead() {
     return mine && mine.warnAt ? mine.warnAt : Rules.WARN_BASE;
   }
   return Rules.statsOf(gear).warn;
+}
+
+function viewAsItem(v) {
+  return {
+    uid: v.uid,
+    slot: v.slot,
+    tier: v.tier || 0,
+    affixes: v.affixes || [],
+    negative: v.negative || null,
+    core: v.core || null,
+    samples: v.samples || 0,
+    name: v.name,
+    mark: v.mark,
+    color: v.color,
+    price: v.price || 0,
+  };
 }
 
 function wornGear() {
@@ -504,15 +547,17 @@ function noteGear(text) {
 function actShop(hit) {
   if (!hit) return;
   if (NET.active) {
-    if (hit.act === 'buy' || hit.act === 'upgrade') NET.send({ type: 'buy', id: hit.id });
-    else if (hit.act === 'equip') NET.send({ type: 'equip', id: hit.id });
+    if (hit.act === 'buy') NET.send({ type: 'buy', id: hit.uid });
+    else if (hit.act === 'train') NET.send({ type: 'train', id: hit.uid });
+    else if (hit.act === 'equip') NET.send({ type: 'equip', id: hit.uid });
     else if (hit.act === 'unequip') NET.send({ type: 'unequip', slot: hit.slot });
     else if (hit.act === 'ready') NET.send({ type: 'ready' });
     return;
   }
   let result = { ok: true, reason: '' };
-  if (hit.act === 'buy' || hit.act === 'upgrade') result = Rules.buyOrUpgrade(gear, hit.id);
-  else if (hit.act === 'equip') result = Rules.equip(gear, hit.id);
+  if (hit.act === 'buy') result = Rules.buy(gear, hit.uid);
+  else if (hit.act === 'train') result = Rules.train(gear, hit.uid);
+  else if (hit.act === 'equip') result = Rules.equip(gear, hit.uid);
   else if (hit.act === 'unequip') result = Rules.unequip(gear, hit.slot);
   else if (hit.act === 'ready') { shopReady = true; return; }
   if (!result.ok) noteGear(Rules.REASON[result.reason] || result.reason);
@@ -613,10 +658,21 @@ function drawWorld() {
     ghosts.forEach((g, i) => {
       const n = Math.min(t, g.length - 1);
       const age = ghosts.length - 1 - i;
-      const q = g[Math.max(0, n)];
+      const head = echoHead(g);
+      const q = head || g[Math.max(0, n)];
       strokeRange(ex, g, 0, g.length - 1, ghostColor(i, Math.max(0.28, 0.58 - age * 0.05)), 3.2);
       strokeRange(ex, g, n - 28, n, ghostColor(i, 0.9), 3);
       strokeRange(ex, g, n, Math.min(g.length - 1, n + 32), ghostColor(i, 1), 3.6);
+      if (head && (head.x !== head.baseX || head.y !== head.baseY)) {
+        ex.strokeStyle = '#ffcc66';
+        ex.lineWidth = 2;
+        ex.setLineDash([3, 3]);
+        ex.beginPath();
+        ex.moveTo(head.baseX, head.baseY);
+        ex.lineTo(head.x, head.y);
+        ex.stroke();
+        ex.setLineDash([]);
+      }
       ex.fillStyle = ghostColor(i, 0.95);
       ex.beginPath();
       ex.arc(q.x, q.y, bodyR(), 0, Math.PI * 2);
@@ -633,9 +689,8 @@ function drawWorld() {
     x.drawImage(echoLayer, 0, 0);
     x.restore();
     ghosts.forEach((g, i) => {
-      const n = Math.min(t, g.length - 1);
-      const q = g[Math.max(0, n)];
-      drawFootRing(q, ghostColor(i, 1), safe);
+      const head = echoHead(g);
+      if (head) drawFootRing(head, ghostColor(i, 1), safe);
     });
 
     const trailColor = NET.active && NET.color && NET.fade ? NET.fade(NET.color, 0.78) : 'rgba(130,220,255,.78)';
@@ -729,7 +784,7 @@ function drawShop() {
   shopHits = [];
   const offers = currentOffers();
   const bag = currentBag();
-  const panel = { x: 36, y: 16, w: LW - 72, h: LH - 32 };
+  const panel = { x: 28, y: 12, w: LW - 56, h: LH - 24 };
   x.fillStyle = 'rgba(8,10,22,.94)';
   x.fillRect(panel.x, panel.y, panel.w, panel.h);
   x.strokeStyle = 'rgba(255,255,255,.28)';
@@ -738,62 +793,76 @@ function drawShop() {
   x.textAlign = 'left';
   x.font = 'bold 18px ui-sans-serif,system-ui,sans-serif';
   x.fillStyle = '#ffec27';
-  x.fillText('轮间商店', panel.x + 16, panel.y + 28);
+  x.fillText('轮间推理', panel.x + 16, panel.y + 26);
   x.font = '14px ui-sans-serif,system-ui,sans-serif';
   x.fillStyle = '#fff';
-  x.fillText('T ' + currentCoins() + '   ' + (currentShopLeft() / 60).toFixed(1) + 's', panel.x + 140, panel.y + 28);
+  x.fillText('T ' + currentCoins() + '   ' + (currentShopLeft() / 60).toFixed(1) + 's', panel.x + 130, panel.y + 26);
   if (gearMsg) {
     x.fillStyle = '#ff8a80';
     x.textAlign = 'right';
-    x.fillText(gearMsg, panel.x + panel.w - 16, panel.y + 28);
+    x.fillText(gearMsg, panel.x + panel.w - 16, panel.y + 26);
     x.textAlign = 'left';
   }
+  x.font = '12px ui-sans-serif,system-ui,sans-serif';
+  x.fillStyle = 'rgba(255,255,255,.72)';
+  x.fillText('种子生成词条。训练用 T 币和对局样本升一代：v1 → v2 → v3 → 前沿模型。幻觉是负面词条。', panel.x + 16, panel.y + 46);
   offers.forEach((offer, i) => {
-    const y = panel.y + 44 + i * 34;
+    const y = panel.y + 58 + i * 52;
     x.beginPath();
     x.fillStyle = offer.color;
-    x.arc(panel.x + 28, y + 12, 8, 0, Math.PI * 2);
+    x.arc(panel.x + 28, y + 16, 10, 0, Math.PI * 2);
     x.fill();
     x.fillStyle = '#1a1020';
     x.font = 'bold 9px ui-sans-serif,system-ui,sans-serif';
     x.textAlign = 'center';
-    x.fillText(offer.mark, panel.x + 28, y + 15);
+    x.fillText(offer.mark, panel.x + 28, y + 19);
     x.textAlign = 'left';
     x.fillStyle = '#fff';
     x.font = '14px ui-sans-serif,system-ui,sans-serif';
-    x.fillText(offer.name + ' · ' + offer.slotName + (offer.level ? ' Lv' + offer.level : ''), panel.x + 44, y + 16);
+    x.fillText(offer.name + ' · ' + offer.slotName + ' · ' + offer.tierLabel + ' · 参数量 ' + offer.params, panel.x + 48, y + 14);
     x.fillStyle = 'rgba(255,255,255,.78)';
     x.font = '12px ui-sans-serif,system-ui,sans-serif';
-    x.fillText(offer.level ? offer.nowText : offer.nextText, panel.x + 250, y + 16);
-    const buyLabel = offer.action === 'max' ? '已满级' : (offer.cost + 'T ' + (offer.action === 'upgrade' ? '升级' : '购买'));
-    hitButton(buyLabel, panel.x + panel.w - 198, y, 104, 26, offer.action === 'max' ? 'max' : offer.action, { id: offer.id });
-    if (offer.level) hitButton(offer.equipped ? '已穿' : '穿上', panel.x + panel.w - 86, y, 58, 26, offer.equipped ? 'max' : 'equip', { id: offer.id });
+    x.fillText((offer.lines || []).slice(0, 3).join(' · '), panel.x + 48, y + 32);
+    hitButton(offer.price + 'T 接入', panel.x + panel.w - 132, y + 8, 108, 28, 'buy', { uid: offer.uid });
   });
   const slots = wornGear();
-  const slotY = panel.y + 46 + offers.length * 34;
+  const slotY = panel.y + 62 + Math.max(offers.length, 1) * 52;
   x.font = '13px ui-sans-serif,system-ui,sans-serif';
   x.fillStyle = '#fff';
   x.textAlign = 'left';
   Rules.SLOTS.forEach((slot, i) => {
     const worn = slots.filter(g => g.slot === slot)[0];
-    x.fillText(Rules.SLOT_NAME[slot] + ' ' + (worn ? worn.mark + worn.level : '空'), panel.x + 16 + i * 180, slotY + 16);
-    if (worn) hitButton('卸下', panel.x + 78 + i * 180, slotY, 46, 22, 'unequip', { slot: slot });
+    const col = panel.x + 16 + i * 290;
+    x.fillStyle = '#fff';
+    x.fillText(Rules.SLOT_NAME[slot] + ' ' + (worn ? worn.mark + ' ' + worn.tierLabel : '空'), col, slotY + 16);
+    if (!worn) return;
+    hitButton('卸下', col + 108, slotY, 46, 22, 'unequip', { slot: slot });
+    if (worn.trainCost) {
+      const ready = (worn.samples || 0) >= worn.trainSamples;
+      hitButton((ready ? '训练 ' : '样本 ') + worn.samples + '/' + worn.trainSamples, col + 160, slotY, 112, 22, 'train', { uid: worn.uid });
+    }
   });
-  const bagY = slotY + 30;
+  const bagY = slotY + 36;
+  x.fillStyle = '#fff';
+  x.font = '13px ui-sans-serif,system-ui,sans-serif';
   x.fillText('背包', panel.x + 16, bagY + 16);
   for (let i = 0; i < Rules.BAG; i++) {
     const item = bag[i];
-    const bx = panel.x + 62 + i * 52;
+    const bx = panel.x + 62 + i * 78;
     x.strokeStyle = 'rgba(255,255,255,.4)';
-    x.strokeRect(bx, bagY, 46, 24);
+    x.strokeRect(bx, bagY, 70, 28);
     if (!item) continue;
     x.fillStyle = item.color;
     x.font = '12px ui-sans-serif,system-ui,sans-serif';
     x.textAlign = 'center';
-    x.fillText(item.mark + item.level, bx + 23, bagY + 16);
-    shopHits.push({ x: bx, y: bagY, w: 46, h: 24, act: 'equip', id: item.id });
+    x.fillText(item.mark + ' ' + item.tierLabel, bx + 35, bagY + 18);
+    shopHits.push({ x: bx, y: bagY, w: 70, h: 28, act: 'equip', uid: item.uid });
   }
-  hitButton('准备好了', panel.x + panel.w - 140, bagY, 112, 26, 'ready', {});
+  hitButton('准备好了', panel.x + panel.w - 140, bagY, 112, 28, 'ready', {});
+  x.textAlign = 'left';
+  x.fillStyle = 'rgba(255,255,255,.55)';
+  x.font = '12px ui-sans-serif,system-ui,sans-serif';
+  x.fillText('1–3 接入货架，4–6 训练头 / 身 / 饰品。预判核沿你的速度提前走，回避核绕开你。', panel.x + 16, panel.y + panel.h - 14);
 }
 
 function shopHitAt(pt) {
@@ -819,7 +888,7 @@ function drawOverlay() {
       '碰到任何一个过去的自己就输了',
       '换轮后先离开刚画的线，回声会沿它走来',
       '鼠标或触摸跟随，也可以用 WASD / 方向键',
-      '轮间商店用 T 币买装备、升级。Shift 冲刺',
+      '轮间推理用 T 币接入装备，再用样本训练升代。Shift 冲刺',
       '点击、触摸或空格开始',
     ];
     lines.forEach((s, i) => x.fillText(s, LW / 2, LH / 2 - u * 0.04 + i * u * 0.048));
@@ -862,9 +931,12 @@ function draw() {
 
   if (state === 'play' || state === 'shop') {
     const left = Math.max(0, STEPS - roundProgress()) / 60;
+    const wornStats = Rules.statsOf(gear);
+    const coreBit = wornStats.core ? (wornStats.core.kind === 'predict' ? '  预判核' : '  回避核') : '';
+    const noiseBit = wornStats.noise ? '  幻觉' : '';
     const bits = state === 'shop'
-      ? ('商店  T' + currentCoins() + '  ' + (currentShopLeft() / 60).toFixed(1) + 's')
-      : ('第 ' + round + ' 轮  得分 ' + score + '  T' + currentCoins() + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (hp > 0 && maxHp > 1 ? '  HP' + hp : '') + (shield ? '  盾' + shield : '') + (protecting() ? '  离开路线' : ''));
+      ? ('推理  T' + currentCoins() + '  ' + (currentShopLeft() / 60).toFixed(1) + 's' + coreBit)
+      : ('第 ' + round + ' 轮  得分 ' + score + '  T' + currentCoins() + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (hp > 0 && maxHp > 1 ? '  HP' + hp : '') + (shield ? '  盾' + shield : '') + coreBit + noiseBit + (protecting() ? '  离开路线' : ''));
     ui.textContent = bits + (gearMsg && state === 'play' ? '  ' + gearMsg : '') + (NET.active ? NET.hudSuffix() : '');
   } else ui.textContent = '';
   const dock = document.getElementById('dock');
@@ -930,9 +1002,14 @@ addEventListener('keydown', e => {
   if (BLOCK.has(k)) e.preventDefault();
   keys[k] = 1;
   if (k === 'shift' || k === 'k') tryDash();
-  if (state === 'shop' && k >= '1' && k <= '7') {
+  if (state === 'shop' && k >= '1' && k <= '3') {
     const offer = currentOffers()[+k - 1];
-    if (offer) actShop({ act: offer.action === 'max' ? 'equip' : offer.action, id: offer.id });
+    if (offer) actShop({ act: 'buy', uid: offer.uid });
+  }
+  if (state === 'shop' && k >= '4' && k <= '6') {
+    const slot = Rules.SLOTS[+k - 4];
+    const worn = wornGear().filter(g => g.slot === slot)[0];
+    if (worn) actShop({ act: 'train', uid: worn.uid });
   }
   if ((k === ' ' || k === 'enter') && state !== 'play') {
     if (state === 'shop') actShop({ act: 'ready' });
@@ -1115,8 +1192,9 @@ NET.beforeDraw = function () {
   score = mine ? mine.score : 0;
   if (mine) {
     const next = Rules.emptyGear();
-    next.t = this.coins;
-    (mine.gear || []).forEach(g => { next.equipped[g.slot] = { id: g.id, level: g.level }; });
+    next.t = s.coins || 0;
+    (mine.gear || []).forEach(g => { next.equipped[g.slot] = viewAsItem(g); });
+    (s.bag || []).forEach(g => next.bag.push(viewAsItem(g)));
     gear = next;
     hp = mine.hp || 0;
     maxHp = mine.maxHp || 1;
