@@ -566,7 +566,8 @@ function sufferEcho() {
 function shopStep() {
   if (gearMsgT > 0) gearMsgT--;
   if (banner > 0) banner--;
-  if (p) movePlayer();
+  vx = 0;
+  vy = 0;
   if (shopLeft > 0) shopLeft--;
   const warmed = shopLeft <= Rules.SHOP_STEPS - Rules.SHOP_MIN;
   if (shopLeft <= 0 || (warmed && shopReady)) endShop();
@@ -1663,6 +1664,15 @@ function draw() {
   } else ui.textContent = '';
   const dock = document.getElementById('dock');
   if (dock && !NET.active) dock.hidden = state === 'shop';
+  syncMenuButtons();
+}
+
+function syncMenuButtons() {
+  const onMenu = state === 'menu';
+  ['campaign', 'quests', 'multi'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.hidden = !onMenu;
+  });
 }
 
 window.__echo = function () {
@@ -2141,21 +2151,22 @@ NET.updateChrome = function () {
   const n = this.snap && this.snap.players ? this.snap.players.length : 0;
   if (dock) dock.hidden = this.active && (this.state === 'play' || this.state === 'shop');
   if (!this.active && !this.connecting) {
-    btn.hidden = false;
     btn.textContent = '多人同场';
     if (leave) leave.hidden = true;
+    syncMenuButtons();
     return;
   }
   if (this.connecting && !this.active) {
-    btn.hidden = false;
     btn.textContent = '连接中…';
     if (leave) leave.hidden = true;
+    syncMenuButtons();
     return;
   }
   btn.hidden = false;
   if (leave) leave.hidden = false;
   btn.textContent = this.state === 'over' ? '再来一局' : ('开始对局（' + n + ' 人）');
   this.note('同一块 960×540 · 空格或按钮开始');
+  syncMenuButtons();
 };
 
 NET.requestStart = function () {
@@ -2241,7 +2252,10 @@ step = function () {
   const mine = NET.myPlayer();
   if (mine && (mine.mode === 'play' || mine.mode === 'lobby')) {
     if (!p) p = { x: mine.x, y: mine.y };
-    movePlayer();
+    if (NET.state === 'shop') {
+      vx = 0;
+      vy = 0;
+    } else movePlayer();
   }
   NET.send(input);
   NET.reconcile();

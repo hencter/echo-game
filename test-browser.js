@@ -61,8 +61,12 @@ async function testSolo(browser, port) {
   const menu = await page.evaluate(() => window.__echo());
   assert(menu.state === 'menu', 'solo menu');
   assert(windowActive(await page.evaluate(() => window.__echoNet())) === false, 'solo does not connect by itself');
+  const menuButtons = await hiddenButtons(page);
+  assert(!menuButtons.campaign && !menuButtons.quests && !menuButtons.multi, 'menu shows the three buttons');
   await key(page, 'keydown', ' ');
   await until(page, () => window.__echo().state === 'play', 'solo play');
+  const playButtons = await hiddenButtons(page);
+  assert(playButtons.campaign && playButtons.quests && playButtons.multi, 'play hides the menu buttons');
   await key(page, 'keydown', 'ArrowRight');
   await until(page, () => window.__echo().x > 520, 'solo move');
   const moved = await page.evaluate(() => window.__echo());
@@ -74,8 +78,17 @@ async function testSolo(browser, port) {
     const e = window.__echo();
     return e.state === 'shop' || (e.round === 2 && e.footDash === true);
   }, 'solo shop', 12000);
+  await key(page, 'keyup', 'ArrowLeft');
   const mid = await page.evaluate(() => window.__echo());
   if (mid.state === 'shop') {
+    const shopButtons = await hiddenButtons(page);
+    assert(shopButtons.campaign && shopButtons.quests && shopButtons.multi, 'shop keeps the menu buttons hidden');
+    await key(page, 'keydown', 'ArrowRight');
+    await sleep(300);
+    const held = await page.evaluate(() => window.__echo());
+    assert(held.state === 'shop', 'a direction key does not leave the shop');
+    assert(Math.abs(held.x - mid.x) < 1 && Math.abs(held.y - mid.y) < 1, 'solo shop ignores movement, saw ' + held.x);
+    await key(page, 'keyup', 'ArrowRight');
     assert(mid.coins >= 8, 'solo round pays T');
     await page.evaluate(() => {
       const offer = window.__echo().offers[0];
@@ -89,6 +102,9 @@ async function testSolo(browser, port) {
   await until(page, () => window.__echo().round === 2 && window.__echo().footDash === true, 'solo grace', 4000);
   const grace = await page.evaluate(() => window.__echo());
   assert(grace.grace > 0 && grace.t < 60, 'solo grace uses the 60-step rule');
+  if (mid.state === 'shop') {
+    assert(Math.abs(grace.x - mid.x) < 2 && Math.abs(grace.y - mid.y) < 2, 'round 2 starts where the shop opened');
+  }
   assert(grace.flicker === (Math.floor(grace.t / 2) % 2 === 0 ? 0.5 : 0.15), 'solo flicker follows the step');
   const ring = await page.evaluate(() => {
     const echo = window.__echo();
@@ -143,6 +159,14 @@ function sleep(ms) {
 }
 
 // waitForFunction polls through CDP often enough to stall this page.
+function hiddenButtons(page) {
+  return page.evaluate(() => ({
+    campaign: document.getElementById('campaign').hidden,
+    quests: document.getElementById('quests').hidden,
+    multi: document.getElementById('multi').hidden,
+  }));
+}
+
 async function key(page, type, name) {
   await page.evaluate((type, name) => {
     window.dispatchEvent(new KeyboardEvent(type, { key: name, bubbles: true }));
@@ -167,11 +191,15 @@ async function testPair(leftBrowser, rightBrowser, port) {
   await right.page.evaluate(() => document.getElementById('multi').click());
   await until(left.page, () => window.__echoNet().active && window.__echoNet().players.length === 2, 'lobby a');
   await until(right.page, () => window.__echoNet().active && window.__echoNet().players.length === 2, 'lobby b');
+  const lobbyButtons = await hiddenButtons(left.page);
+  assert(!lobbyButtons.campaign && !lobbyButtons.quests && !lobbyButtons.multi, 'the lobby menu still shows the three buttons');
   await left.page.screenshot({ path: path.join(OUT, 'lobby-a.png') });
   await right.page.screenshot({ path: path.join(OUT, 'lobby-b.png') });
   await key(left.page, 'keydown', ' ');
   await until(left.page, () => window.__echo().state === 'play' && window.__echo().round === 1, 'play a');
   await until(right.page, () => window.__echo().state === 'play', 'play b');
+  const matchButtons = await hiddenButtons(left.page);
+  assert(matchButtons.campaign && matchButtons.quests && matchButtons.multi, 'a multiplayer match hides the menu buttons');
   const starsA = await left.page.evaluate(() => window.__echo().starPos);
   const starsB = await right.page.evaluate(() => window.__echo().starPos);
   assert(JSON.stringify(starsA) === JSON.stringify(starsB), 'both clients share stars');
@@ -242,6 +270,10 @@ async function testPair(leftBrowser, rightBrowser, port) {
   await right.page.screenshot({ path: path.join(OUT, 'solid-b.png') });
   await key(left.page, 'keyup', 'ArrowRight');
   await key(right.page, 'keyup', 'ArrowLeft');
+  await left.page.evaluate(() => document.getElementById('leave').click());
+  await until(left.page, () => window.__echo().state === 'menu', 'left the match');
+  const returned = await hiddenButtons(left.page);
+  assert(!returned.campaign && !returned.quests && !returned.multi, 'the menu buttons return after leaving');
   assert(!left.errors.length, 'client A errors ' + left.errors.join(' | '));
   assert(!right.errors.length, 'client B errors ' + right.errors.join(' | '));
 }
