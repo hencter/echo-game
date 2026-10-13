@@ -47,6 +47,25 @@ function cleanName(value) {
   return text;
 }
 
+function claimSlot(players) {
+  const used = new Set();
+  for (const player of players.values()) {
+    if (player.slot != null) used.add(player.slot);
+  }
+  for (let slot = 0; slot < MAX_PLAYERS; slot++) {
+    if (!used.has(slot)) return slot;
+  }
+  return -1;
+}
+
+function seatSpawn(slot) {
+  const x = rules.W / 2 + ((slot % 2 === 0 ? -1 : 1) * Math.ceil(slot / 2) * 48);
+  return {
+    x: Math.max(20, Math.min(rules.W - 20, x)),
+    y: rules.H / 2,
+  };
+}
+
 function roomOf(url) {
   const parsed = new URL(url, 'http://127.0.0.1');
   const raw = parsed.searchParams.get('room') || 'hall';
@@ -257,6 +276,7 @@ function createRoom(name, dispose) {
       stars: room.stars.map((star) => ({ x: star.x, y: star.y })),
       players: [...room.players.values()].map((player) => ({
         id: player.id,
+        slot: player.slot,
         name: player.name,
         color: player.color,
         x: player.x,
@@ -721,20 +741,22 @@ function createRoom(name, dispose) {
     },
     hello(socket, msg) {
       if (room.bySocket.has(socket)) return;
-      if (room.players.size >= MAX_PLAYERS) {
+      const slot = claimSlot(room.players);
+      if (slot < 0) {
         socket.close(1008, 'full');
         return;
       }
-      const index = room.players.size;
       const id = 'p' + (++room.nextId);
+      const at = seatSpawn(slot);
       const player = {
         id,
-        name: cleanName(msg && msg.name) || NAMES[index % NAMES.length],
-        color: COLORS[index % COLORS.length],
+        slot,
+        name: cleanName(msg && msg.name) || NAMES[slot],
+        color: COLORS[slot],
         role: rules.roleById(msg && msg.role) ? String(msg.role) : 'echo',
         socket,
-        x: rules.W / 2 + ((index % 2 === 0 ? -1 : 1) * Math.ceil(index / 2) * 48),
-        y: rules.H / 2,
+        x: at.x,
+        y: at.y,
         vx: 0,
         vy: 0,
         mode: room.state === 'play' || room.state === 'shop' ? 'spectate' : 'lobby',
@@ -932,6 +954,7 @@ function createRoom(name, dispose) {
       if (!player) return;
       room.bySocket.delete(socket);
       room.players.delete(player.id);
+      player.slot = null;
       if (!room.players.size) {
         dispose(room.name);
         return;

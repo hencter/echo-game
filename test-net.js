@@ -72,6 +72,7 @@ async function main() {
     await testShopCountdown(app, port);
     await testShopHoldsPosition(app, port);
     await testDeathCause(app, port);
+    await testSeats(app, port);
     console.log('net rules ok');
   } finally {
     await app.close();
@@ -612,6 +613,64 @@ async function testDeathCause(app, port) {
   assert(rules.echoDeathLine(cross.victim_id, cross.ghost_owner_id, '甲', cross.victim_name) === '乙撞上了甲的回声', 'other echo uses the owner name');
   a.ws.close();
   b.ws.close();
+  await flush();
+}
+
+async function testSeats(app, port) {
+  const names = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛'];
+  const colors = ['#ff8ad4', '#b8ff7a', '#ffd27a', '#d4a5ff', '#7affd4', '#ffaa7a', '#a0b4ff', '#7ad7ff'];
+  const spawnX = (slot) => 480 + ((slot % 2 === 0 ? -1 : 1) * Math.ceil(slot / 2) * 48);
+  const a = await openClient(port, 'seats', '');
+  const b = await openClient(port, 'seats', '');
+  await waitFor(b, (snap) => snap.players.length === 2, 'seat lobby');
+  const aSeat = me(a.last);
+  const bSeat = other(a.last);
+  assert(aSeat.slot === 0 && bSeat.slot === 1, 'the first two seats are 0 and 1');
+  assert(aSeat.name === names[0] && bSeat.name === names[1], 'empty joins take the seat name');
+  assert(aSeat.color === colors[0] && bSeat.color === colors[1], 'colors come from the seat');
+  assert(aSeat.x === spawnX(0) && bSeat.x === spawnX(1) && aSeat.y === 270 && bSeat.y === 270, 'spawn comes from the seat');
+  assert(aSeat.slot !== bSeat.slot && aSeat.name !== bSeat.name && aSeat.color !== bSeat.color, 'A and B do not share a seat');
+  a.ws.close();
+  await waitFor(b, (snap) => snap.players.length === 1 && me(snap).id === bSeat.id, 'A left and freed seat 0');
+  const c = await openClient(port, 'seats', '');
+  await waitFor(c, (snap) => snap.players.length === 2, 'C joined');
+  const cSeat = me(c.last);
+  const stillB = other(c.last);
+  assert(cSeat.id !== aSeat.id && cSeat.id !== bSeat.id, 'C is a third player');
+  assert(cSeat.slot === aSeat.slot && cSeat.name === aSeat.name && cSeat.color === aSeat.color, 'C took the seat A freed');
+  assert(cSeat.x === aSeat.x && cSeat.y === aSeat.y, 'C spawns on the freed seat');
+  assert(stillB.slot === bSeat.slot && stillB.name === bSeat.name && stillB.color === bSeat.color, 'B keeps the seat they joined with');
+  assert(cSeat.slot !== stillB.slot && cSeat.name !== stillB.name && cSeat.color !== stillB.color, 'C does not copy the player who stayed');
+  const seen = [aSeat, bSeat, cSeat];
+  assert(new Set(seen.map((p) => p.id)).size === 3, 'the repro has three different players');
+  assert(new Set([aSeat.slot, bSeat.slot]).size === 2 && new Set([cSeat.slot, stillB.slot]).size === 2, 'seats in the room stay distinct');
+  assert(new Set([aSeat.name, bSeat.name]).size === 2 && new Set([cSeat.name, stillB.name]).size === 2, 'names in the room stay distinct');
+  assert(new Set([aSeat.color, bSeat.color]).size === 2 && new Set([cSeat.color, stillB.color]).size === 2, 'colors in the room stay distinct');
+  b.ws.close();
+  c.ws.close();
+  await flush();
+
+  const room = 'seats-full';
+  const seated = [];
+  for (let i = 0; i < 8; i++) seated.push(await openClient(port, room, ''));
+  await waitFor(seated[7], (snap) => snap.players.length === 8, 'eight seats');
+  const rows = seated[7].last.players;
+  assert(new Set(rows.map((p) => p.slot)).size === 8, 'every seat is taken once');
+  assert(new Set(rows.map((p) => p.name)).size === 8, 'full room names do not wrap');
+  assert(new Set(rows.map((p) => p.color)).size === 8, 'full room colors do not wrap');
+  rows.forEach((p) => {
+    assert(p.slot >= 0 && p.slot < 8, 'slot stays inside the room');
+    assert(p.name === names[p.slot] && p.color === colors[p.slot], 'name and color follow the slot');
+  });
+  const extra = await openClient(port, room, '');
+  const closed = await new Promise((resolve) => {
+    if (extra.ws.readyState === 3) resolve(extra.ws);
+    else extra.ws.on('close', () => resolve(extra.ws));
+  });
+  assert(closed, 'a full room closes the next join');
+  await flush();
+  assert(seated[7].last.players.length === 8, 'the ninth player was not seated');
+  seated.forEach((client) => client.ws.close());
   await flush();
 }
 

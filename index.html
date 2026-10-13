@@ -1097,13 +1097,13 @@ function placeInShop(px, py, role) {
   };
 }
 
-function drawSprite(ctx, px, py, id, row, moving, alpha, scale) {
+function drawSprite(ctx, px, py, id, row, moving, alpha, scale, colOverride) {
   const role = Rules.roleById(id);
   const img = role && sheets[role.id];
   if (!role || !role.sheet || !img || !img.complete || !img.naturalWidth) return false;
   const spec = Rules.SPRITE;
   const zoom = scale || 1;
-  const col = moving ? 2 + (Math.floor(Date.now() / 120) % spec.walk) : (Math.floor(Date.now() / 360) % spec.idle);
+  const col = colOverride != null ? colOverride : (moving ? 2 + (Math.floor(Date.now() / 120) % spec.walk) : (Math.floor(Date.now() / 360) % spec.idle));
   const prev = ctx.imageSmoothingEnabled;
   ctx.imageSmoothingEnabled = false;
   ctx.save();
@@ -1190,7 +1190,7 @@ function drawWorld() {
         ex.setLineDash([]);
       }
       const echoRole = (NET.ghostMeta && NET.ghostMeta[i] && NET.ghostMeta[i].role) || roleId;
-      const spot = q ? placeInShop(q.x, q.y, Rules.roleById(echoRole)) : null;
+      const spot = q && state !== 'shop' ? placeInShop(q.x, q.y, Rules.roleById(echoRole)) : null;
       const echoed = !eatenHead && spot && drawSprite(ex, spot.x, spot.y, echoRole, echoRow(g, i), false, 0.72, 1);
       if (!eatenHead && spot && !echoed) {
         ex.fillStyle = ghostColor(i, 0.95);
@@ -1216,7 +1216,7 @@ function drawWorld() {
       const n = Math.min(t, g.length - 1);
       if (echoHoles[i] && echoHoles[i][n]) return;
       const head = echoHead(g);
-      if (head) {
+      if (head && state !== 'shop') {
         const role = (NET.ghostMeta && NET.ghostMeta[i] && NET.ghostMeta[i].role) || roleId;
         const foot = placeInShop(head.x, head.y, Rules.roleById(role));
         drawFootRing(foot, safe);
@@ -1358,11 +1358,13 @@ function drawShop() {
   x.strokeRect(panel.x, panel.y, panel.w, panel.h);
   x.textAlign = 'left';
   x.font = 'bold 18px ui-sans-serif,system-ui,sans-serif';
+  const portrait = { x: panel.x + 12, y: panel.y + 12, s: 64 };
+  const listX = portrait.x + portrait.s + 16;
   x.fillStyle = '#ffec27';
-  x.fillText('轮间推理', panel.x + 16, panel.y + 26);
+  x.fillText('轮间推理', listX, panel.y + 26);
   x.font = '14px ui-sans-serif,system-ui,sans-serif';
   x.fillStyle = '#fff';
-  x.fillText(tokenText(currentCoins()) + '   ' + (currentShopLeft() / 60).toFixed(1) + 's', panel.x + 130, panel.y + 26);
+  x.fillText(tokenText(currentCoins()) + '   ' + (currentShopLeft() / 60).toFixed(1) + 's', listX + 114, panel.y + 26);
   if (gearMsg) {
     x.fillStyle = '#ff8a80';
     x.textAlign = 'right';
@@ -1371,24 +1373,24 @@ function drawShop() {
   }
   x.font = '12px ui-sans-serif,system-ui,sans-serif';
   x.fillStyle = 'rgba(255,255,255,.72)';
-  x.fillText('种子生成词条。训练用 token 和对局样本升代。AI 核心和推理会按步消耗 token 余额。', panel.x + 16, panel.y + 46);
+  x.fillText('种子生成词条。训练用 token 和对局样本升代。AI 核心和推理会按步消耗 token 余额。', listX, panel.y + 46);
   offers.forEach((offer, i) => {
     const y = panel.y + 58 + i * 52;
     x.beginPath();
     x.fillStyle = offer.color;
-    x.arc(panel.x + 28, y + 16, 10, 0, Math.PI * 2);
+    x.arc(listX + 12, y + 16, 10, 0, Math.PI * 2);
     x.fill();
     x.fillStyle = '#1a1020';
     x.font = 'bold 9px ui-sans-serif,system-ui,sans-serif';
     x.textAlign = 'center';
-    x.fillText(offer.mark, panel.x + 28, y + 19);
+    x.fillText(offer.mark, listX + 12, y + 19);
     x.textAlign = 'left';
     x.fillStyle = '#fff';
     x.font = '14px ui-sans-serif,system-ui,sans-serif';
-    x.fillText(offer.name + ' · ' + offer.slotName + ' · ' + offer.tierLabel + ' · 参数量 ' + offer.params, panel.x + 48, y + 14);
+    x.fillText(offer.name + ' · ' + offer.slotName + ' · ' + offer.tierLabel + ' · 参数量 ' + offer.params, listX + 32, y + 14);
     x.fillStyle = 'rgba(255,255,255,.78)';
     x.font = '12px ui-sans-serif,system-ui,sans-serif';
-    x.fillText((offer.lines || []).slice(0, 3).join(' · '), panel.x + 48, y + 32);
+    x.fillText((offer.lines || []).slice(0, 3).join(' · '), listX + 32, y + 32);
     hitButton(offer.price + ' 接入', panel.x + panel.w - 132, y + 8, 108, 28, 'buy', { uid: offer.uid });
   });
   const catalog = Rules.itemCatalog();
@@ -1396,16 +1398,16 @@ function drawShop() {
     const y = panel.y + 58 + offers.length * 52 + i * 36;
     x.beginPath();
     x.fillStyle = item.color;
-    x.arc(panel.x + 28, y + 12, 8, 0, Math.PI * 2);
+    x.arc(listX + 12, y + 12, 8, 0, Math.PI * 2);
     x.fill();
     x.fillStyle = '#1a1020';
     x.font = 'bold 9px ui-sans-serif,system-ui,sans-serif';
     x.textAlign = 'center';
-    x.fillText(item.mark, panel.x + 28, y + 15);
+    x.fillText(item.mark, listX + 12, y + 15);
     x.textAlign = 'left';
     x.fillStyle = '#fff';
     x.font = '14px ui-sans-serif,system-ui,sans-serif';
-    x.fillText(item.name + '  ×' + currentItemCount(item.id) + '  ·  ' + item.blurb, panel.x + 48, y + 16);
+    x.fillText(item.name + '  ×' + currentItemCount(item.id) + '  ·  ' + item.blurb, listX + 32, y + 16);
     hitButton(item.price + ' 购买', panel.x + panel.w - 132, y, 108, 26, 'buyItem', { id: item.id });
   });
   const slots = wornGear();
@@ -1443,49 +1445,37 @@ function drawShop() {
     if (item.kind !== 'card') shopHits.push({ x: bx, y: bagY, w: 70, h: 28, act: 'equip', uid: item.uid });
   }
   hitButton('准备好了', panel.x + panel.w - 140, bagY, 112, 28, 'ready', {});
-  drawShopPeople();
+  drawShopPortrait(portrait);
   x.textAlign = 'left';
   x.fillStyle = 'rgba(255,255,255,.55)';
   x.font = '12px ui-sans-serif,system-ui,sans-serif';
   x.fillText('1–3 接入货架，4–6 训练头 / 身 / 饰品。预判核沿你的速度提前走，回避核绕开你。', panel.x + 16, panel.y + panel.h - 14);
 }
 
-function drawShopPeople() {
-  if (state !== 'shop') return;
-  const drawOne = (px, py, id, vx0, vy0, alpha, color, label, faceId) => {
-    const role = Rules.roleById(id);
-    const shown = placeInShop(px, py, role);
-    const moving = Math.hypot(vx0, vy0) > 8;
-    const painted = drawSprite(x, shown.x, shown.y, id, faceRow(faceId, vx0, vy0), moving, alpha, 1);
-    if (!painted) {
-      x.save();
-      x.globalAlpha = alpha;
-      x.fillStyle = color || (role && role.color) || '#7ad7ff';
-      x.beginPath();
-      x.arc(shown.x, shown.y, bodyR(), 0, Math.PI * 2);
-      x.fill();
-      x.restore();
-    }
-    const sheeted = !!(role && role.sheet);
-    x.save();
-    x.globalAlpha = 1;
-    x.fillStyle = '#fff';
-    x.font = '12px ui-sans-serif,system-ui,sans-serif';
-    x.textAlign = 'center';
-    x.fillText(label, shown.x, sheeted ? shown.y - Rules.SPRITE.footY - 4 : shown.y - bodyR() - 6);
-    x.restore();
-  };
-  if (NET.active && NET.snap) {
-    (NET.snap.players || []).forEach((pl) => {
-      if (pl.mode === 'spectate') return;
-      let px = pl.x;
-      let py = pl.y;
-      if (pl.id === NET.id && p && (pl.mode === 'play' || pl.mode === 'lobby')) { px = p.x; py = p.y; }
-      drawOne(px, py, pl.role || 'echo', pl.vx, pl.vy, pl.mode === 'dead' ? 0.45 : 1, pl.color, pl.name, pl.id === NET.id ? 'self' : pl.id);
-    });
-    return;
+function drawShopPortrait(frame) {
+  if (state !== 'shop' || !frame) return;
+  const mine = NET.active && NET.myPlayer ? NET.myPlayer() : null;
+  const id = (mine && mine.role) || roleId;
+  const color = (mine && mine.color) || (NET.active && NET.color) || ((Rules.roleById(id) || {}).color) || '#7ad7ff';
+  x.save();
+  x.fillStyle = 'rgba(0,0,0,.35)';
+  x.fillRect(frame.x, frame.y, frame.s, frame.s);
+  x.strokeStyle = 'rgba(255,255,255,.55)';
+  x.lineWidth = 1;
+  x.strokeRect(frame.x + 0.5, frame.y + 0.5, frame.s - 1, frame.s - 1);
+  x.beginPath();
+  x.rect(frame.x, frame.y, frame.s, frame.s);
+  x.clip();
+  const footX = frame.x + frame.s / 2;
+  const footY = frame.y + frame.s - 4;
+  const painted = drawSprite(x, footX, footY, id, 0, false, 1, 1, 0);
+  if (!painted) {
+    x.fillStyle = color;
+    x.beginPath();
+    x.arc(footX, footY - bodyR(), bodyR(), 0, Math.PI * 2);
+    x.fill();
   }
-  if (p) drawOne(p.x, p.y, roleId, vx, vy, 1, (Rules.roleById(roleId) || {}).color, '', 'self');
+  x.restore();
 }
 
 function drawResetButton() {
@@ -2283,6 +2273,7 @@ NET.drawMark = function (q) {
 
 NET.drawActors = function () {
   if (!this.snap) return;
+  if (state === 'shop') return;
   const players = this.snap.players || [];
   for (let i = 0; i < players.length; i++) {
     const pl = players[i];
