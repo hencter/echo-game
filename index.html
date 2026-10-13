@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>回声 · 游戏部</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0d1a'/%3E%3Ccircle cx='11' cy='16' r='4.2' fill='%23ff6d9a'/%3E%3Ccircle cx='21' cy='16' r='4.2' fill='%2366ccff'/%3E%3C/svg%3E">
 <style>
   html,body{margin:0;height:100%;background:#0b0d1a;color:#eee;font-family:ui-sans-serif,system-ui,sans-serif;overflow:hidden;touch-action:none;user-select:none}
   canvas{display:block;width:100%;height:100%}
@@ -18,6 +19,7 @@ const c = document.getElementById('c');
 const x = c.getContext('2d');
 const ui = document.getElementById('ui');
 const STEPS = 360;
+const GRACE = 32;
 const CAP_W = 960;
 const CAP_H = 540;
 
@@ -41,6 +43,7 @@ let keys = {};
 let mouse = null;
 let shake = 0;
 let banner = 0;
+let grace = 0;
 
 function unit() { return Math.min(LW, LH); }
 function moveSpeed() { return unit() * 0.44; }
@@ -149,6 +152,7 @@ function reset() {
   parts = [];
   shake = 0;
   banner = 0;
+  grace = 0;
   spawnStar();
   spawnStar();
   state = 'play';
@@ -177,6 +181,7 @@ function finishRound() {
   setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
   boom(p.x, p.y, '#6cf', 24);
   shake = unit() * 0.008;
+  grace = GRACE;
 }
 
 function movePlayer() {
@@ -224,9 +229,13 @@ function step() {
   rec.push({x: p.x, y: p.y});
   t = rec.length - 1;
 
-  for (const g of ghosts) {
-    const q = g[Math.min(t, g.length - 1)];
-    if (q && Math.hypot(q.x - p.x, q.y - p.y) < collideDist()) { die(); return; }
+  const safe = grace > 0;
+  if (grace > 0) grace--;
+  if (!safe) {
+    for (const g of ghosts) {
+      const q = g[Math.min(t, g.length - 1)];
+      if (q && Math.hypot(q.x - p.x, q.y - p.y) < collideDist()) { die(); return; }
+    }
   }
 
   const got = collectR();
@@ -285,22 +294,33 @@ function drawWorld() {
   x.strokeRect(1, 1, LW - 2, LH - 2);
 
   if (state !== 'menu') {
+    const safe = grace > 0 && ghosts.length > 0;
     ghosts.forEach((g, i) => {
       const n = Math.min(t, g.length - 1);
       const age = ghosts.length - 1 - i;
-      strokeRange(g, 0, g.length - 1, ghostColor(i, Math.max(0.28, 0.58 - age * 0.05)), 3.2);
-      strokeRange(g, n - 28, n, ghostColor(i, 0.9), 3);
-      strokeRange(g, n, Math.min(g.length - 1, n + 32), ghostColor(i, 1), 3.6);
+      strokeRange(g, 0, g.length - 1, ghostColor(i, (safe ? 0.45 : 1) * Math.max(0.28, 0.58 - age * 0.05)), 3.2);
+      if (!safe) {
+        strokeRange(g, n - 28, n, ghostColor(i, 0.9), 3);
+        strokeRange(g, n, Math.min(g.length - 1, n + 32), ghostColor(i, 1), 3.6);
+      }
       const q = g[Math.max(0, n)];
-      x.fillStyle = ghostColor(i, 0.95);
-      x.beginPath();
-      x.arc(q.x, q.y, bodyR(), 0, Math.PI * 2);
-      x.fill();
-      x.strokeStyle = ghostColor(i, 0.55);
-      x.lineWidth = 1.5;
-      x.beginPath();
-      x.arc(q.x, q.y, Math.max(bodyR() + 2, collideDist() - bodyR()), 0, Math.PI * 2);
-      x.stroke();
+      if (safe) {
+        x.strokeStyle = ghostColor(i, 0.95);
+        x.lineWidth = 2.4;
+        x.beginPath();
+        x.arc(q.x, q.y, bodyR() + 3, 0, Math.PI * 2);
+        x.stroke();
+      } else {
+        x.fillStyle = ghostColor(i, 0.95);
+        x.beginPath();
+        x.arc(q.x, q.y, bodyR(), 0, Math.PI * 2);
+        x.fill();
+        x.strokeStyle = ghostColor(i, 0.55);
+        x.lineWidth = 1.5;
+        x.beginPath();
+        x.arc(q.x, q.y, Math.max(bodyR() + 2, collideDist() - bodyR()), 0, Math.PI * 2);
+        x.stroke();
+      }
     });
 
     if (rec.length > 1) strokeRange(rec, 0, rec.length - 1, 'rgba(130,220,255,.78)', 2.6);
@@ -352,13 +372,17 @@ function drawWorld() {
     x.fillRect(16, LH - 14, LW - 32, 5);
     x.fillStyle = hot ? '#ff8a80' : '#6cf';
     x.fillRect(16, LH - 14, (LW - 32) * (1 - left / 6), 5);
+    x.font = 'bold ' + Math.round(unit() * 0.04) + 'px ui-sans-serif,system-ui,sans-serif';
+    x.textAlign = 'center';
     if (banner > 0) {
       x.globalAlpha = Math.min(1, banner / 20);
       x.fillStyle = '#fff';
-      x.font = 'bold ' + Math.round(unit() * 0.04) + 'px ui-sans-serif,system-ui,sans-serif';
-      x.textAlign = 'center';
       x.fillText('回声 +1', LW / 2, 42);
       x.globalAlpha = 1;
+    }
+    if (grace > 0 && ghosts.length) {
+      x.fillStyle = '#ffe082';
+      x.fillText('离开路线', LW / 2, banner > 0 ? 78 : 42);
     }
   }
 }
@@ -376,19 +400,33 @@ function drawOverlay() {
       '每 6 秒一轮，收集金星',
       '你走过的路线会变成回声，下一轮原样重放',
       '碰到任何一个过去的自己就输了',
-      '停在原地，下一轮的回声会从脚下出现',
+      '换轮后先离开刚画的线，回声会沿它走来',
       '鼠标或触摸跟随，也可以用 WASD / 方向键',
       '点击、触摸或空格开始',
     ];
     lines.forEach((s, i) => x.fillText(s, LW / 2, LH / 2 - u * 0.04 + i * u * 0.048));
   }
   if (state === 'over') {
+    x.fillStyle = 'rgba(6,8,18,.58)';
+    x.fillRect(0, 0, LW, LH);
+    const bw = Math.min(LW - 48, u * 1.62);
+    const bh = u * 0.4;
+    const bx = (LW - bw) / 2;
+    const by = (LH - bh) / 2;
+    x.fillStyle = 'rgba(12,16,32,.92)';
+    x.beginPath();
+    x.roundRect(bx, by, bw, bh, 18);
+    x.fill();
+    x.strokeStyle = 'rgba(255,255,255,.18)';
+    x.lineWidth = 2;
+    x.stroke();
+    x.fillStyle = '#fff';
     x.font = 'bold ' + Math.round(u * 0.07) + 'px ui-sans-serif,system-ui,sans-serif';
-    x.fillText('撞上了过去的自己', LW / 2, LH / 2 - u * 0.04);
+    x.fillText('撞上了过去的自己', LW / 2, by + bh * 0.38);
     x.font = Math.round(u * 0.034) + 'px ui-sans-serif,system-ui,sans-serif';
-    x.fillText('得分 ' + score + '  ·  撑过 ' + (round - 1) + ' 轮  ·  最佳 ' + best, LW / 2, LH / 2 + u * 0.03);
+    x.fillText('得分 ' + score + '  ·  撑过 ' + (round - 1) + ' 轮  ·  最佳 ' + best, LW / 2, by + bh * 0.62);
     x.fillStyle = 'rgba(255,255,255,.8)';
-    x.fillText('点击 / 空格 再来', LW / 2, LH / 2 + u * 0.09);
+    x.fillText('点击 / 空格 再来', LW / 2, by + bh * 0.84);
   }
 }
 
@@ -405,7 +443,7 @@ function draw() {
 
   if (state === 'play') {
     const left = Math.max(0, STEPS - rec.length) / 60;
-    ui.textContent = '第 ' + round + ' 轮  得分 ' + score + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's';
+    ui.textContent = '第 ' + round + ' 轮  得分 ' + score + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (grace > 0 && ghosts.length ? '  离开路线' : '');
   } else ui.textContent = '';
 }
 
@@ -431,6 +469,7 @@ window.__echo = function () {
     view: {ox: view.ox, oy: view.oy, s: view.s},
     steps: STEPS,
     rec0: rec[0] ? {x: rec[0].x, y: rec[0].y} : null,
+    grace,
   };
 };
 
