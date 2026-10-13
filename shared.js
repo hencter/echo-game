@@ -16,6 +16,18 @@
   const T_ROUND = 8;
   const IFRAMES = 36;
   const BAG = 6;
+  const ITEMS = {
+    reset: {
+      id: 'reset',
+      name: '重置卡',
+      mark: '复',
+      color: '#9ad0ff',
+      price: 10,
+      blurb: '回到这一轮开始。得分保留。',
+      stack: 6,
+    },
+  };
+  const DRAIN = { coreSteps: 45, warnSteps: 90, dash: 1 };
   const SCORE_STAR = 10;
   const SCORE_ROUND = 50;
 
@@ -88,7 +100,8 @@
   const PREFIXES = ['微调版', '蒸馏版', '量化版', '对齐版', '温度版', '检索版', '思维链'];
 
   const REASON = {
-    not_enough_T: 'T 币不够',
+    not_enough_T: 'token 余额不够',
+    no_card: '背包里没有重置卡',
     bag_full: '背包满了',
     max_tier: '已经是前沿模型',
     not_owned: '还没有这件',
@@ -512,8 +525,109 @@
     return out;
   }
 
+  function isCard(entry) {
+    return !!(entry && entry.kind === 'card');
+  }
+
+  function countItem(gear, id) {
+    let n = 0;
+    const bag = gear && gear.bag || [];
+    for (let i = 0; i < bag.length; i++) {
+      if (isCard(bag[i]) && bag[i].id === id) n += bag[i].count || 0;
+    }
+    return n;
+  }
+
+  function buyItem(gear, id) {
+    const spec = ITEMS[id];
+    if (!spec) return fail('unknown');
+    if (gear.t < spec.price) return fail('not_enough_T');
+    for (let i = 0; i < gear.bag.length; i++) {
+      const entry = gear.bag[i];
+      if (isCard(entry) && entry.id === id) {
+        if (entry.count >= spec.stack) return fail('bag_full');
+        gear.t -= spec.price;
+        entry.count += 1;
+        return ok();
+      }
+    }
+    if (gear.bag.length >= BAG) return fail('bag_full');
+    gear.t -= spec.price;
+    gear.bag.push({ kind: 'card', id: id, count: 1 });
+    return ok();
+  }
+
+  function spendItem(gear, id) {
+    for (let i = 0; i < gear.bag.length; i++) {
+      const entry = gear.bag[i];
+      if (isCard(entry) && entry.id === id && entry.count > 0) {
+        entry.count -= 1;
+        if (entry.count <= 0) gear.bag.splice(i, 1);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function itemCatalog() {
+    return Object.keys(ITEMS).map(function (id) {
+      const spec = ITEMS[id];
+      return {
+        id: id,
+        name: spec.name,
+        mark: spec.mark,
+        color: spec.color,
+        price: spec.price,
+        blurb: spec.blurb,
+        stack: spec.stack,
+      };
+    });
+  }
+
+  function poweredStats(gear) {
+    const stats = statsOf(gear);
+    if (!gear || gear.t <= 0) {
+      stats.core = null;
+      stats.reward = 1;
+      if (stats.warn > WARN_BASE) stats.warn = WARN_BASE;
+      stats.dash = null;
+    }
+    return stats;
+  }
+
+  function tickDrain(gear, stats, step) {
+    if (!gear || gear.t <= 0 || !step) return 0;
+    let spent = 0;
+    if (stats && stats.core && step % DRAIN.coreSteps === 0) spent += 1;
+    if (stats && stats.warn > WARN_BASE && step % DRAIN.warnSteps === 0) spent += 1;
+    if (!spent) return 0;
+    const take = Math.min(gear.t, spent);
+    gear.t -= take;
+    return take;
+  }
+
+  function payDash(gear) {
+    if (!gear || gear.t < DRAIN.dash) return false;
+    gear.t -= DRAIN.dash;
+    return true;
+  }
+
   function bagView(gear) {
-    return gear.bag.map(viewItem);
+    return gear.bag.map(function (entry) {
+      if (isCard(entry)) {
+        const spec = ITEMS[entry.id] || {};
+        return {
+          kind: 'card',
+          id: entry.id,
+          count: entry.count,
+          name: spec.name || entry.id,
+          mark: spec.mark || '?',
+          color: spec.color || '#fff',
+          blurb: spec.blurb || '',
+        };
+      }
+      return viewItem(entry);
+    });
   }
 
   function offers(gear) {
@@ -570,5 +684,14 @@
     publicGear: publicGear,
     bagView: bagView,
     offers: offers,
+    ITEMS: ITEMS,
+    DRAIN: DRAIN,
+    countItem: countItem,
+    buyItem: buyItem,
+    spendItem: spendItem,
+    itemCatalog: itemCatalog,
+    poweredStats: poweredStats,
+    tickDrain: tickDrain,
+    payDash: payDash,
   };
 });

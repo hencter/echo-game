@@ -173,10 +173,23 @@ function createRoom(name, dispose) {
     rules.applyMove(player, player.input, rules.W, rules.H, { speed: stats.speed });
   }
 
+  function markCheckpoint(player) {
+    player.checkpoint = {
+      x: player.x,
+      y: player.y,
+      hp: player.hp,
+      shield: player.shield,
+    };
+  }
+
   function startDash(player) {
-    const stats = rules.statsOf(player.gear);
+    const stats = rules.poweredStats(player.gear);
     if (room.state !== 'play' || player.mode !== 'play') return;
     if (!stats.dash || player.dashCd > 0 || player.dashLeft > 0) return;
+    if (!rules.payDash(player.gear)) {
+      deny(player, 'not_enough_T');
+      return;
+    }
     const dir = facing(player);
     player.dashX = dir.x;
     player.dashY = dir.y;
@@ -253,7 +266,7 @@ function createRoom(name, dispose) {
     const dist = rules.collideDist(rules.W, rules.H, room.ghosts.length);
     for (const player of alive()) {
       let best = null;
-      const stats = rules.statsOf(player.gear);
+      const stats = rules.poweredStats(player.gear);
       for (const ghost of room.ghosts) {
         const q = rules.echoAt(ghost.pts, room.t, {
           x: player.x,
@@ -333,7 +346,7 @@ function createRoom(name, dispose) {
     room.stars = room.stars.filter((star) => {
       for (let i = 0; i < playing.length; i++) {
         const player = playing[i];
-        const stats = rules.statsOf(player.gear);
+        const stats = rules.poweredStats(player.gear);
         if (Math.hypot(star.x - player.x, star.y - player.y) >= base * stats.magnet) continue;
         const gain = stats.reward || 1;
         player.score += Math.round(rules.SCORE_STAR * room.round * stats.score * gain);
@@ -349,7 +362,7 @@ function createRoom(name, dispose) {
   function finishRound() {
     for (const player of room.players.values()) {
       if (player.mode !== 'play') continue;
-      const stats = rules.statsOf(player.gear);
+      const stats = rules.poweredStats(player.gear);
       const gain = stats.reward || 1;
       player.score += Math.round(rules.SCORE_ROUND * stats.score * gain);
       player.gear.t += Math.round(rules.T_ROUND * gain);
@@ -388,7 +401,10 @@ function createRoom(name, dispose) {
       player.rec = [];
       player.dashLeft = 0;
       player.dashCd = 0;
-      if (player.mode === 'play') syncVitals(player, true);
+      if (player.mode === 'play') {
+        syncVitals(player, true);
+        markCheckpoint(player);
+      }
     }
     fillStars();
     room.events.push({ type: 'round' });
@@ -421,7 +437,9 @@ function createRoom(name, dispose) {
         player.y = Math.max(12, Math.min(rules.H - 12, player.y + nudge.y));
       }
       player.rec.push({ x: player.x, y: player.y });
+      player.warnAt = rules.poweredStats(player.gear).warn;
     }
+    for (const player of alive()) rules.tickDrain(player.gear, rules.statsOf(player.gear), room.step);
     collide();
     if (!alive().length) {
       room.state = 'over';
@@ -467,6 +485,7 @@ function createRoom(name, dispose) {
       player.rec = [];
       player.input = { ax: 0, ay: 0, mouse: null, keyboard: false };
       blankCombat(player);
+      markCheckpoint(player);
     }
     room.shopLeft = 0;
     fillStars();
@@ -582,6 +601,35 @@ function createRoom(name, dispose) {
       }
       changeGear(player, rules.unequip(player.gear, slot));
     },
+    buyItem(socket, id) {
+      const player = room.bySocket.get(socket);
+      if (!player || player.mode !== 'play') return;
+      if (room.state !== 'shop') {
+        deny(player, 'shop_only');
+        return;
+      }
+      changeGear(player, rules.buyItem(player.gear, id));
+    },
+    reset(socket) {
+      const player = room.bySocket.get(socket);
+      if (!player || player.mode !== 'play' || room.state !== 'play') return;
+      if (!rules.spendItem(player.gear, 'reset')) {
+        deny(player, 'no_card');
+        return;
+      }
+      const spot = player.checkpoint || { x: player.x, y: player.y, hp: player.hp, shield: player.shield };
+      player.x = spot.x;
+      player.y = spot.y;
+      player.vx = 0;
+      player.vy = 0;
+      player.hp = spot.hp;
+      player.shield = spot.shield;
+      player.iframes = 0;
+      player.dashLeft = 0;
+      player.dashCd = 0;
+      player.rec = [];
+      room.events.push({ type: 'reset', id: player.id, x: player.x, y: player.y });
+    },
     ready(socket) {
       const player = room.bySocket.get(socket);
       if (!player || player.mode !== 'play' || room.state !== 'shop') return;
@@ -590,6 +638,13 @@ function createRoom(name, dispose) {
     debugCoins(playerName, amount) {
       for (const player of room.players.values()) {
         if (player.name === playerName) player.gear.t = amount;
+      }
+    },
+    debugGrantItem(playerName, id, count) {
+      if (!rules.ITEMS[id]) return;
+      for (const player of room.players.values()) {
+        if (player.name !== playerName) continue;
+        player.gear.bag.push({ kind: 'card', id: id, count: Math.max(1, count | 0) });
       }
     },
     debugForge(playerName, spec) {
@@ -667,6 +722,8 @@ function createApp(options = {}) {
       else if (msg.type === 'start') room.requestStart(socket);
       else if (msg.type === 'dash') room.dash(socket);
       else if (msg.type === 'buy') room.buy(socket, msg.id);
+      else if (msg.type === 'buyItem') room.buyItem(socket, msg.id);
+      else if (msg.type === 'reset') room.reset(socket);
       else if (msg.type === 'train') room.train(socket, msg.id);
       else if (msg.type === 'equip') room.equip(socket, msg.id);
       else if (msg.type === 'unequip') room.unequip(socket, msg.slot);
@@ -682,6 +739,12 @@ function createApp(options = {}) {
       const room = rooms.get(roomName);
       if (!room) throw new Error('no room');
       room.debugCoins(playerName, amount);
+    },
+    debugGrantItem(roomName, playerName, id, count) {
+      if (!options.testGrant) throw new Error('debug items are off');
+      const room = rooms.get(roomName);
+      if (!room) throw new Error('no room');
+      room.debugGrantItem(playerName, id, count);
     },
     debugForge(roomName, playerName, spec) {
       if (!options.testGrant) throw new Error('debug forge is off');
