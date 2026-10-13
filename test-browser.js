@@ -70,7 +70,19 @@ async function testSolo(browser, port) {
   assert(moved.round === 1 && moved.footDash === false, 'round 1 is not in grace');
   await key(page, 'keyup', 'ArrowRight');
   await key(page, 'keydown', 'ArrowLeft');
-  await until(page, () => window.__echo().round === 2 && window.__echo().footDash === true, 'solo grace', 12000);
+  await until(page, () => {
+    const e = window.__echo();
+    return e.state === 'shop' || (e.round === 2 && e.footDash === true);
+  }, 'solo shop', 12000);
+  const mid = await page.evaluate(() => window.__echo());
+  if (mid.state === 'shop') {
+    assert(mid.coins >= 8, 'solo round pays T');
+    await page.evaluate(() => window.__echoShop({ act: 'buy', id: 'boots' }));
+    const bought = await page.evaluate(() => window.__echo());
+    assert(bought.worn.some(g => g.id === 'boots'), 'solo shop equips boots');
+    await page.evaluate(() => window.__echoShop({ act: 'ready' }));
+  }
+  await until(page, () => window.__echo().round === 2 && window.__echo().footDash === true, 'solo grace', 4000);
   const grace = await page.evaluate(() => window.__echo());
   assert(grace.grace > 0 && grace.t < 60, 'solo grace uses the 60-step rule');
   assert(grace.flicker === (Math.floor(grace.t / 2) % 2 === 0 ? 0.5 : 0.15), 'solo flicker follows the step');
@@ -133,8 +145,22 @@ async function testPair(leftBrowser, rightBrowser, port) {
   assert(seeB.find(p => p.name === '甲').x > 560, '乙 sees 甲 on the right');
   await until(left.page, () => {
     const e = window.__echo();
+    return e.state === 'shop' || (e.round === 2 && e.footDash && e.grace > 0);
+  }, 'shop or grace', 12000);
+  const shopping = await left.page.evaluate(() => window.__echo().state === 'shop');
+  if (shopping) {
+    await left.page.evaluate(() => window.__echoShop({ act: 'buy', id: 'boots' }));
+    await right.page.evaluate(() => window.__echoShop({ act: 'ready' }));
+    await left.page.evaluate(() => window.__echoShop({ act: 'ready' }));
+    await until(right.page, () => {
+      const players = window.__echoNet().players;
+      return players.some(p => (p.gear || []).some(g => g.id === 'boots'));
+    }, 'peer sees boots', 4000);
+  }
+  await until(left.page, () => {
+    const e = window.__echo();
     return e.round === 2 && e.footDash && e.grace > 0 && e.ghosts >= 2;
-  }, 'grace a', 12000);
+  }, 'grace a', 4000);
   await until(right.page, () => window.__echo().round === 2 && window.__echo().footDash, 'grace b', 2000);
   const graceA = await left.page.evaluate(() => window.__echo());
   const graceB = await right.page.evaluate(() => window.__echo());
