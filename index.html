@@ -1,30 +1,483 @@
-<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>回声 · 游戏部</title>
-<style>body{margin:0;background:#0b0d1a;color:#eee;font-family:sans-serif;overflow:hidden;touch-action:none}canvas{display:block}#ui{position:fixed;top:8px;left:12px;font-size:18px;pointer-events:none}</style></head><body>
-<div id="ui"></div><canvas id="c"></canvas><script>
-const c=document.getElementById('c'),x=c.getContext('2d'),ui=document.getElementById('ui');
-let W,H;function rs(){W=c.width=innerWidth;H=c.height=innerHeight}rs();onresize=rs;
-const ROUND=6;let AC;function beep(f,d=.1,t='sine',v=.15){try{AC=AC||new AudioContext();const o=AC.createOscillator(),g=AC.createGain();o.type=t;o.frequency.value=f;g.gain.setValueAtTime(v,AC.currentTime);g.gain.exponentialRampToValueAtTime(.001,AC.currentTime+d);o.connect(g).connect(AC.destination);o.start();o.stop(AC.currentTime+d)}catch(e){}}
-let best=+(localStorage.echoBest||0),state='menu',p,ghosts,rec,t,round,score,stars,parts=[],keys={},mouse=null,shake=0;
-function reset(){p={x:W/2,y:H/2};ghosts=[];rec=[];t=0;round=1;score=0;stars=[];parts=[];spawn();spawn();state='play'}
-function spawn(){stars.push({x:40+Math.random()*(W-80),y:60+Math.random()*(H-100)})}
-function boom(X,Y,col,n=20){for(let i=0;i<n;i++){const a=Math.random()*6.28,s=Math.random()*5;parts.push({x:X,y:Y,vx:Math.cos(a)*s,vy:Math.sin(a)*s,l:40,col})}}
-onkeydown=e=>{keys[e.key.toLowerCase()]=1;if((e.key==' '||e.key=='Enter')&&state!='play')reset()};onkeyup=e=>keys[e.key.toLowerCase()]=0;
-const pm=e=>{const q=e.touches?e.touches[0]:e;mouse={x:q.clientX,y:q.clientY}};
-c.onmousemove=pm;c.ontouchmove=e=>{pm(e);e.preventDefault()};c.ontouchstart=e=>{pm(e);if(state!='play')reset()};c.onmousedown=()=>{if(state!='play')reset()};
-function step(){if(state!='play')return;let dx=(keys.d||keys.arrowright?1:0)-(keys.a||keys.arrowleft?1:0),dy=(keys.s||keys.arrowdown?1:0)-(keys.w||keys.arrowup?1:0);
-if(dx||dy){const l=Math.hypot(dx,dy);p.x+=dx/l*5;p.y+=dy/l*5;mouse=null}else if(mouse){const ex=mouse.x-p.x,ey=mouse.y-p.y,l=Math.hypot(ex,ey);if(l>2){const s=Math.min(5,l);p.x+=ex/l*s;p.y+=ey/l*s}}
-p.x=Math.max(10,Math.min(W-10,p.x));p.y=Math.max(10,Math.min(H-10,p.y));rec.push({x:p.x,y:p.y});t++;
-for(const g of ghosts){const q=g[Math.min(t,g.length-1)];if(Math.hypot(q.x-p.x,q.y-p.y)<16){state='over';shake=20;boom(p.x,p.y,'#f55',60);beep(110,.5,'sawtooth',.25);if(score>best){best=score;localStorage.echoBest=best}return}}
-stars=stars.filter(s=>{if(Math.hypot(s.x-p.x,s.y-p.y)<20){score+=10*round;boom(s.x,s.y,'#ffd54a');beep(600+Math.random()*400,.12,'triangle');return false}return true});while(stars.length<2+Math.min(round,4))spawn();
-if(t>=ROUND*60){ghosts.push(rec);rec=[];t=0;round++;score+=50;beep(330,.15);setTimeout(()=>beep(495,.2),120);boom(p.x,p.y,'#6cf',30);shake=6}}
-function draw(){x.save();if(shake>0){x.translate((Math.random()-.5)*shake,(Math.random()-.5)*shake);shake*=.9}x.fillStyle='rgba(11,13,26,.35)';x.fillRect(-20,-20,W+40,H+40);
-if(state!='menu'){ghosts.forEach((g,i)=>{const n=Math.min(t,g.length-1);x.strokeStyle='rgba(255,90,140,.12)';x.beginPath();for(let k=n;k<Math.min(n+40,g.length);k++)x.lineTo(g[k].x,g[k].y);x.stroke();const q=g[n];x.fillStyle='hsla('+(330+i*20)+',90%,60%,.85)';x.beginPath();x.arc(q.x,q.y,10,0,7);x.fill()});
-stars.forEach(s=>{x.fillStyle='#ffd54a';x.beginPath();x.arc(s.x,s.y,7+Math.sin(Date.now()/150)*2,0,7);x.fill()});
-if(state=='play'){x.fillStyle='#6cf';x.shadowColor='#6cf';x.shadowBlur=20;x.beginPath();x.arc(p.x,p.y,10,0,7);x.fill();x.shadowBlur=0;x.fillStyle='#6cf';x.fillRect(0,H-6,W*t/(ROUND*60),6)}}
-parts=parts.filter(q=>{q.x+=q.vx;q.y+=q.vy;q.vx*=.95;q.vy*=.95;q.l--;x.globalAlpha=q.l/40;x.fillStyle=q.col;x.fillRect(q.x,q.y,3,3);x.globalAlpha=1;return q.l>0});x.restore();
-x.fillStyle='#fff';x.textAlign='center';
-if(state=='menu'){x.font='bold 48px sans-serif';x.fillText('回 声',W/2,H/2-90);x.font='18px sans-serif';['每 6 秒一轮，收集金星','轮结束后，你刚才走过的路线会变成「回声幽灵」重放','碰到任何一个过去的自己就输了 —— 你的敌人全是你自己','鼠标/触摸跟随，或 WASD/方向键移动','点击 / 空格 开始'].forEach((s,i)=>x.fillText(s,W/2,H/2-30+i*30))}
-if(state=='over'){x.font='bold 40px sans-serif';x.fillText('撞上了过去的自己',W/2,H/2-30);x.font='20px sans-serif';x.fillText('得分 '+score+' · 撑过 '+(round-1)+' 轮 · 最佳 '+best,W/2,H/2+10);x.fillText('点击 / 空格 再来',W/2,H/2+45)}
-ui.textContent=state=='play'?`第 ${round} 轮  得分 ${score}  回声 ${ghosts.length}  最佳 ${best}`:''}
-(function loop(){step();draw();requestAnimationFrame(loop)})();
-</script></body></html>
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>回声 · 游戏部</title>
+<style>
+  html,body{margin:0;height:100%;background:#0b0d1a;color:#eee;font-family:ui-sans-serif,system-ui,sans-serif;overflow:hidden;touch-action:none;user-select:none}
+  canvas{display:block;width:100%;height:100%}
+  #ui{position:fixed;left:12px;top:8px;font-size:16px;pointer-events:none;text-shadow:0 1px 2px #000}
+</style>
+</head>
+<body>
+<div id="ui"></div>
+<canvas id="c"></canvas>
+<script>
+const c = document.getElementById('c');
+const x = c.getContext('2d');
+const ui = document.getElementById('ui');
+const STEPS = 360;
+const CAP_W = 960;
+const CAP_H = 540;
+
+let LW = CAP_W, LH = CAP_H;
+let view = {s: 1, dpr: 1, ox: 0, oy: 0};
+let AC;
+let best = 0;
+try { best = +(localStorage.echoBest || 0) || 0; } catch (e) {}
+
+let state = 'menu';
+let p = null;
+let vx = 0, vy = 0;
+let ghosts = [];
+let rec = [];
+let t = 0;
+let round = 1;
+let score = 0;
+let stars = [];
+let parts = [];
+let keys = {};
+let mouse = null;
+let shake = 0;
+let banner = 0;
+
+function unit() { return Math.min(LW, LH); }
+function moveSpeed() { return unit() * 0.44; }
+function bodyR() { return unit() * 0.02; }
+function collectR() { return unit() * 0.04; }
+function collideDist() {
+  return bodyR() * 2 + unit() * 0.00115 * Math.min(ghosts.length, 10);
+}
+function starGoal() { return Math.min(4, 2 + Math.floor((round - 1) / 2)); }
+
+function chooseArena() {
+  const fit = Math.min(innerWidth / CAP_W, innerHeight / CAP_H);
+  if (fit >= 1) { LW = CAP_W; LH = CAP_H; }
+  else { LW = Math.max(320, innerWidth); LH = Math.max(240, innerHeight); }
+}
+
+function layout() {
+  const dpr = Math.min(devicePixelRatio || 1, 2);
+  const s = Math.min(innerWidth / LW, innerHeight / LH);
+  view = {
+    s,
+    dpr,
+    ox: (innerWidth - LW * s) / 2,
+    oy: (innerHeight - LH * s) / 2,
+  };
+  c.width = Math.max(1, Math.round(innerWidth * dpr));
+  c.height = Math.max(1, Math.round(innerHeight * dpr));
+}
+
+function toLogical(cx, cy) {
+  return {
+    x: Math.max(0, Math.min(LW, (cx - view.ox) / view.s)),
+    y: Math.max(0, Math.min(LH, (cy - view.oy) / view.s)),
+  };
+}
+
+function beep(f, d = 0.1, type = 'sine', v = 0.15) {
+  try {
+    AC = AC || new AudioContext();
+    const o = AC.createOscillator();
+    const g = AC.createGain();
+    o.type = type;
+    o.frequency.value = f;
+    g.gain.setValueAtTime(v, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.001, AC.currentTime + d);
+    o.connect(g).connect(AC.destination);
+    o.start();
+    o.stop(AC.currentTime + d);
+  } catch (e) {}
+}
+
+function boom(X, Y, col, n = 18) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const s = Math.random() * unit() * 0.012;
+    parts.push({x: X, y: Y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, l: 28, col});
+  }
+}
+
+function starValid(sx, sy) {
+  const u = unit();
+  if (Math.hypot(sx - p.x, sy - p.y) < u * 0.12) return false;
+  for (const s of stars) if (Math.hypot(s.x - sx, s.y - sy) < u * 0.1) return false;
+  for (const g of ghosts) {
+    const q = g[Math.min(t, g.length - 1)];
+    if (q && Math.hypot(q.x - sx, q.y - sy) < collideDist() + u * 0.02) return false;
+  }
+  return true;
+}
+
+function spawnStar() {
+  const u = unit();
+  const maxD = Math.min(Math.hypot(LW, LH), u * (0.34 + (round - 1) * 0.13));
+  const minD = u * 0.14;
+  for (let n = 0; n < 28; n++) {
+    let sx, sy;
+    if (n < 22) {
+      const a = Math.random() * Math.PI * 2;
+      const d = minD + Math.random() * Math.max(8, maxD - minD);
+      sx = p.x + Math.cos(a) * d;
+      sy = p.y + Math.sin(a) * d;
+    } else {
+      sx = u * 0.06 + Math.random() * (LW - u * 0.12);
+      sy = u * 0.06 + Math.random() * (LH - u * 0.12);
+    }
+    sx = Math.max(u * 0.05, Math.min(LW - u * 0.05, sx));
+    sy = Math.max(u * 0.05, Math.min(LH - u * 0.05, sy));
+    if (!starValid(sx, sy)) continue;
+    stars.push({x: sx, y: sy});
+    return;
+  }
+}
+
+function reset() {
+  chooseArena();
+  layout();
+  p = {x: LW / 2, y: LH / 2};
+  vx = 0;
+  vy = 0;
+  ghosts = [];
+  rec = [];
+  t = 0;
+  round = 1;
+  score = 0;
+  stars = [];
+  parts = [];
+  shake = 0;
+  banner = 0;
+  spawnStar();
+  spawnStar();
+  state = 'play';
+  beep(523, 0.08, 'triangle', 0.12);
+}
+
+function die() {
+  state = 'over';
+  shake = unit() * 0.02;
+  boom(p.x, p.y, '#f55', 48);
+  beep(110, 0.5, 'sawtooth', 0.25);
+  if (score > best) {
+    best = score;
+    try { localStorage.echoBest = String(best); } catch (e) {}
+  }
+}
+
+function finishRound() {
+  ghosts.push(rec);
+  rec = [];
+  t = 0;
+  round += 1;
+  score += 50;
+  banner = 70;
+  beep(330, 0.15, 'triangle', 0.16);
+  setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
+  boom(p.x, p.y, '#6cf', 24);
+  shake = unit() * 0.008;
+}
+
+function movePlayer() {
+  const dt = 1 / 60;
+  const max = moveSpeed();
+  let ix = (keys.d || keys.arrowright ? 1 : 0) - (keys.a || keys.arrowleft ? 1 : 0);
+  let iy = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
+  if (ix || iy) {
+    const l = Math.hypot(ix, iy);
+    ix /= l;
+    iy /= l;
+    mouse = null;
+  } else if (mouse) {
+    const ex = mouse.x - p.x;
+    const ey = mouse.y - p.y;
+    const l = Math.hypot(ex, ey);
+    if (l > unit() * 0.008) { ix = ex / l; iy = ey / l; }
+  }
+  const k = 1 - Math.exp(-dt / 0.022);
+  vx += (ix * max - vx) * k;
+  vy += (iy * max - vy) * k;
+  if (!ix && !iy && Math.hypot(vx, vy) < max * 0.04) { vx = 0; vy = 0; }
+  let stepX = vx * dt;
+  let stepY = vy * dt;
+  if (mouse && !((keys.d || keys.a || keys.arrowleft || keys.arrowright || keys.w || keys.s || keys.arrowup || keys.arrowdown))) {
+    const l = Math.hypot(mouse.x - p.x, mouse.y - p.y);
+    const mag = Math.hypot(stepX, stepY);
+    if (mag > l) { stepX *= l / mag; stepY *= l / mag; vx *= 0.35; vy *= 0.35; }
+  }
+  p.x += stepX;
+  p.y += stepY;
+  const m = bodyR() + 2;
+  p.x = Math.max(m, Math.min(LW - m, p.x));
+  p.y = Math.max(m, Math.min(LH - m, p.y));
+}
+
+function step() {
+  parts.forEach(q => { q.x += q.vx; q.y += q.vy; q.vx *= 0.96; q.vy *= 0.96; q.l--; });
+  parts = parts.filter(q => q.l > 0);
+  if (shake > 0) shake *= 0.86;
+  if (banner > 0) banner--;
+  if (state !== 'play') return;
+
+  movePlayer();
+  rec.push({x: p.x, y: p.y});
+  t = rec.length - 1;
+
+  for (const g of ghosts) {
+    const q = g[Math.min(t, g.length - 1)];
+    if (q && Math.hypot(q.x - p.x, q.y - p.y) < collideDist()) { die(); return; }
+  }
+
+  const got = collectR();
+  stars = stars.filter(s => {
+    if (Math.hypot(s.x - p.x, s.y - p.y) < got) {
+      score += 10 * round;
+      boom(s.x, s.y, '#ffd54a', 14);
+      beep(600 + Math.random() * 400, 0.1, 'triangle', 0.12);
+      return false;
+    }
+    return true;
+  });
+  let guard = 0;
+  while (stars.length < starGoal() && guard++ < 4) spawnStar();
+
+  if (rec.length >= STEPS) finishRound();
+}
+
+function strokeRange(pts, a, b, style, width) {
+  if (!pts || b - a < 1) return;
+  x.beginPath();
+  x.strokeStyle = style;
+  x.lineWidth = width;
+  x.lineCap = 'round';
+  x.lineJoin = 'round';
+  let moved = false;
+  for (let i = a; i <= b && i < pts.length; i++) {
+    if (i < 0) continue;
+    const q = pts[i];
+    if (!moved) { x.moveTo(q.x, q.y); moved = true; }
+    else x.lineTo(q.x, q.y);
+  }
+  if (moved) x.stroke();
+}
+
+function ghostColor(i, a) {
+  return 'hsla(' + ((328 + i * 19) % 360) + ',88%,64%,' + a + ')';
+}
+
+function drawSpark(sx, sy, r) {
+  x.beginPath();
+  for (let i = 0; i < 8; i++) {
+    const rad = i % 2 ? r * 0.42 : r;
+    const a = -Math.PI / 2 + i * Math.PI / 4;
+    const px = sx + Math.cos(a) * rad;
+    const py = sy + Math.sin(a) * rad;
+    if (i) x.lineTo(px, py); else x.moveTo(px, py);
+  }
+  x.closePath();
+  x.fill();
+}
+
+function drawWorld() {
+  x.strokeStyle = 'rgba(255,255,255,.1)';
+  x.lineWidth = 2;
+  x.strokeRect(1, 1, LW - 2, LH - 2);
+
+  if (state !== 'menu') {
+    ghosts.forEach((g, i) => {
+      const n = Math.min(t, g.length - 1);
+      const age = ghosts.length - 1 - i;
+      strokeRange(g, 0, g.length - 1, ghostColor(i, Math.max(0.28, 0.58 - age * 0.05)), 3.2);
+      strokeRange(g, n - 28, n, ghostColor(i, 0.9), 3);
+      strokeRange(g, n, Math.min(g.length - 1, n + 32), ghostColor(i, 1), 3.6);
+      const q = g[Math.max(0, n)];
+      x.fillStyle = ghostColor(i, 0.95);
+      x.beginPath();
+      x.arc(q.x, q.y, bodyR(), 0, Math.PI * 2);
+      x.fill();
+      x.strokeStyle = ghostColor(i, 0.55);
+      x.lineWidth = 1.5;
+      x.beginPath();
+      x.arc(q.x, q.y, Math.max(bodyR() + 2, collideDist() - bodyR()), 0, Math.PI * 2);
+      x.stroke();
+    });
+
+    if (rec.length > 1) strokeRange(rec, 0, rec.length - 1, 'rgba(130,220,255,.78)', 2.6);
+
+    const warn = state === 'play' && rec.length >= STEPS - 75;
+    if (warn) {
+      const marks = [];
+      ghosts.forEach(g => { if (g[0]) marks.push(g[0]); });
+      if (rec[0]) marks.push(rec[0]);
+      marks.forEach(q => {
+        const rad = bodyR() + unit() * 0.028 + Math.sin(rec.length / 3) * 1.5;
+        x.strokeStyle = '#ffe082';
+        x.lineWidth = 2;
+        x.beginPath();
+        x.arc(q.x, q.y, rad, 0, Math.PI * 2);
+        x.moveTo(q.x - rad - 4, q.y); x.lineTo(q.x + rad + 4, q.y);
+        x.moveTo(q.x, q.y - rad - 4); x.lineTo(q.x, q.y + rad + 4);
+        x.stroke();
+      });
+    }
+
+    stars.forEach(s => {
+      x.fillStyle = '#ffd54a';
+      drawSpark(s.x, s.y, bodyR() * 0.85 + Math.sin(Date.now() / 160) * 1.4);
+    });
+
+    if (p && state !== 'menu') {
+      x.fillStyle = '#7ad7ff';
+      x.shadowColor = '#6cf';
+      x.shadowBlur = 18;
+      x.beginPath();
+      x.arc(p.x, p.y, bodyR(), 0, Math.PI * 2);
+      x.fill();
+      x.shadowBlur = 0;
+    }
+  }
+
+  parts.forEach(q => {
+    x.globalAlpha = Math.max(0, q.l / 28);
+    x.fillStyle = q.col;
+    x.fillRect(q.x, q.y, 3, 3);
+    x.globalAlpha = 1;
+  });
+
+  if (state === 'play') {
+    const left = Math.max(0, STEPS - rec.length) / 60;
+    const hot = rec.length >= STEPS - 75;
+    x.fillStyle = 'rgba(255,255,255,.12)';
+    x.fillRect(16, LH - 14, LW - 32, 5);
+    x.fillStyle = hot ? '#ff8a80' : '#6cf';
+    x.fillRect(16, LH - 14, (LW - 32) * (1 - left / 6), 5);
+    if (banner > 0) {
+      x.globalAlpha = Math.min(1, banner / 20);
+      x.fillStyle = '#fff';
+      x.font = 'bold ' + Math.round(unit() * 0.04) + 'px ui-sans-serif,system-ui,sans-serif';
+      x.textAlign = 'center';
+      x.fillText('回声 +1', LW / 2, 42);
+      x.globalAlpha = 1;
+    }
+  }
+}
+
+function drawOverlay() {
+  x.fillStyle = '#fff';
+  x.textAlign = 'center';
+  const u = unit();
+  if (state === 'menu') {
+    x.font = 'bold ' + Math.round(u * 0.09) + 'px ui-sans-serif,system-ui,sans-serif';
+    x.fillText('回 声', LW / 2, LH / 2 - u * 0.16);
+    x.font = Math.round(u * 0.032) + 'px ui-sans-serif,system-ui,sans-serif';
+    x.fillStyle = 'rgba(255,255,255,.92)';
+    const lines = [
+      '每 6 秒一轮，收集金星',
+      '你走过的路线会变成回声，下一轮原样重放',
+      '碰到任何一个过去的自己就输了',
+      '停在原地，下一轮的回声会从脚下出现',
+      '鼠标或触摸跟随，也可以用 WASD / 方向键',
+      '点击、触摸或空格开始',
+    ];
+    lines.forEach((s, i) => x.fillText(s, LW / 2, LH / 2 - u * 0.04 + i * u * 0.048));
+  }
+  if (state === 'over') {
+    x.font = 'bold ' + Math.round(u * 0.07) + 'px ui-sans-serif,system-ui,sans-serif';
+    x.fillText('撞上了过去的自己', LW / 2, LH / 2 - u * 0.04);
+    x.font = Math.round(u * 0.034) + 'px ui-sans-serif,system-ui,sans-serif';
+    x.fillText('得分 ' + score + '  ·  撑过 ' + (round - 1) + ' 轮  ·  最佳 ' + best, LW / 2, LH / 2 + u * 0.03);
+    x.fillStyle = 'rgba(255,255,255,.8)';
+    x.fillText('点击 / 空格 再来', LW / 2, LH / 2 + u * 0.09);
+  }
+}
+
+function draw() {
+  x.setTransform(1, 0, 0, 1, 0, 0);
+  x.fillStyle = '#0b0d1a';
+  x.fillRect(0, 0, c.width, c.height);
+  x.setTransform(view.dpr * view.s, 0, 0, view.dpr * view.s, view.dpr * view.ox, view.dpr * view.oy);
+  x.save();
+  if (shake > 0) x.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  drawWorld();
+  x.restore();
+  drawOverlay();
+
+  if (state === 'play') {
+    const left = Math.max(0, STEPS - rec.length) / 60;
+    ui.textContent = '第 ' + round + ' 轮  得分 ' + score + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's';
+  } else ui.textContent = '';
+}
+
+window.__echo = function () {
+  return {
+    state,
+    x: p && p.x,
+    y: p && p.y,
+    ghosts: ghosts.length,
+    t,
+    round,
+    score,
+    stars: stars.length,
+    W: LW,
+    H: LH,
+    starPos: stars.map(s => ({x: s.x, y: s.y})),
+    ghostPos: ghosts.map(g => {
+      const q = g[Math.min(Math.max(t, 0), g.length - 1)];
+      return q ? {x: q.x, y: q.y, len: g.length, x0: g[0].x, y0: g[0].y} : null;
+    }),
+    hit: collideDist(),
+    speed: moveSpeed(),
+    view: {ox: view.ox, oy: view.oy, s: view.s},
+    steps: STEPS,
+    rec0: rec[0] ? {x: rec[0].x, y: rec[0].y} : null,
+  };
+};
+
+const BLOCK = new Set([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright']);
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (BLOCK.has(k)) e.preventDefault();
+  keys[k] = 1;
+  if ((k === ' ' || k === 'enter') && state !== 'play') reset();
+});
+addEventListener('keyup', e => { keys[e.key.toLowerCase()] = 0; });
+
+function pointFrom(e) {
+  const src = e.touches ? e.touches[0] : e;
+  mouse = toLogical(src.clientX, src.clientY);
+}
+c.onmousemove = pointFrom;
+c.onmousedown = e => { pointFrom(e); if (state !== 'play') reset(); };
+c.ontouchstart = e => { pointFrom(e); if (state !== 'play') reset(); e.preventDefault(); };
+c.ontouchmove = e => { pointFrom(e); e.preventDefault(); };
+c.oncontextmenu = e => e.preventDefault();
+
+addEventListener('resize', () => {
+  if (state !== 'play') chooseArena();
+  layout();
+});
+
+chooseArena();
+layout();
+
+let acc = 0;
+let last = performance.now();
+function frame(now) {
+  let dt = now - last;
+  last = now;
+  if (dt < 0) dt = 0;
+  if (dt > 250) dt = 250;
+  acc += dt;
+  let n = 0;
+  while (acc >= 1000 / 60 && n++ < 8) {
+    step();
+    acc -= 1000 / 60;
+  }
+  draw();
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
