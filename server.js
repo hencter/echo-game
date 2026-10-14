@@ -17,6 +17,16 @@ const FILES = new Map([
   ['/shared.js', 'shared.js'],
 ]);
 
+function nudgeSalt(id) {
+  let h = 2166136261;
+  const text = String(id || '');
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return (h >>> 0) || 1;
+}
+
 function cleanName(value) {
   const text = String(value || '').trim().slice(0, 12);
   if (!text || !/^[\w\u4e00-\u9fff-]+$/.test(text)) return '';
@@ -86,6 +96,8 @@ function createRoom(name, dispose) {
     ghosts: [],
     stars: [],
     events: [],
+    shopLeft: 0,
+    seed: 1,
     players: new Map(),
     bySocket: new Map(),
   };
@@ -96,6 +108,81 @@ function createRoom(name, dispose) {
 
   function graceNow() {
     return room.state === 'play' && rules.protecting(room.ghosts.length, room.t);
+  }
+
+  function blankCombat(player) {
+    player.gear = rules.emptyGear();
+    player.hp = 1;
+    player.maxHp = 1;
+    player.shield = 0;
+    player.iframes = 0;
+    player.dashLeft = 0;
+    player.dashCd = 0;
+    player.dashX = 1;
+    player.dashY = 0;
+    player.ready = false;
+    player.warnAt = rules.WARN_BASE;
+    player.nudgeSalt = nudgeSalt(player.id);
+  }
+
+  function syncVitals(player, fill) {
+    const stats = rules.statsOf(player.gear);
+    player.maxHp = stats.maxHp;
+    player.warnAt = stats.warn;
+    if (fill) {
+      player.hp = stats.maxHp;
+      player.shield = stats.blocks;
+      player.iframes = 0;
+      player.dashLeft = 0;
+      player.dashCd = 0;
+    } else if (player.hp > player.maxHp) {
+      player.hp = player.maxHp;
+    }
+    return stats;
+  }
+
+  function facing(player) {
+    const input = player.input || {};
+    if (input.ax || input.ay) {
+      const len = Math.hypot(input.ax, input.ay) || 1;
+      return { x: input.ax / len, y: input.ay / len };
+    }
+    if (input.mouse) {
+      const dx = input.mouse.x - player.x;
+      const dy = input.mouse.y - player.y;
+      const len = Math.hypot(dx, dy);
+      if (len > 4) return { x: dx / len, y: dy / len };
+    }
+    const speed = Math.hypot(player.vx, player.vy);
+    if (speed > 1) return { x: player.vx / speed, y: player.vy / speed };
+    const len = Math.hypot(player.dashX, player.dashY) || 1;
+    return { x: player.dashX / len, y: player.dashY / len };
+  }
+
+  function movePlayer(player) {
+    const stats = rules.statsOf(player.gear);
+    if (player.dashLeft > 0) {
+      rules.applyMove(player, player.input, rules.W, rules.H, {
+        speed: stats.speed,
+        dash: { x: player.dashX, y: player.dashY, mul: stats.dash ? stats.dash.speed : stats.speed },
+      });
+      player.dashLeft--;
+      return;
+    }
+    if (player.dashCd > 0) player.dashCd--;
+    rules.applyMove(player, player.input, rules.W, rules.H, { speed: stats.speed });
+  }
+
+  function startDash(player) {
+    const stats = rules.statsOf(player.gear);
+    if (room.state !== 'play' || player.mode !== 'play') return;
+    if (!stats.dash || player.dashCd > 0 || player.dashLeft > 0) return;
+    const dir = facing(player);
+    player.dashX = dir.x;
+    player.dashY = dir.y;
+    player.dashLeft = stats.dash.frames;
+    player.dashCd = stats.dash.cd;
+    room.events.push({ type: 'dash', id: player.id });
   }
 
   function fillStars() {
@@ -126,7 +213,14 @@ function createRoom(name, dispose) {
         vy: player.vy,
         mode: player.mode,
         score: player.score,
+        hp: player.hp,
+        maxHp: player.maxHp,
+        shield: player.shield,
+        warnAt: player.warnAt,
+        ready: !!player.ready,
+        gear: player.gear ? rules.publicGear(player.gear) : [],
       })),
+      shopLeft: room.shopLeft,
       ghosts: room.ghosts.map((ghost) => ({
         ownerId: ghost.ownerId,
         name: ghost.name,
@@ -147,6 +241,9 @@ function createRoom(name, dispose) {
     for (const player of room.players.values()) {
       if (!player.socket || player.socket.readyState !== 1) continue;
       message.you = player.id;
+      message.coins = player.gear ? player.gear.t : 0;
+      message.bag = player.gear ? rules.bagView(player.gear) : [];
+      message.offers = player.gear ? rules.offers(player.gear) : [];
       player.socket.send(JSON.stringify(message));
     }
   }
@@ -156,8 +253,17 @@ function createRoom(name, dispose) {
     const dist = rules.collideDist(rules.W, rules.H, room.ghosts.length);
     for (const player of alive()) {
       let best = null;
+      const stats = rules.statsOf(player.gear);
       for (const ghost of room.ghosts) {
-        const q = ghost.pts[Math.min(room.t, ghost.pts.length - 1)];
+        const q = rules.echoAt(ghost.pts, room.t, {
+          x: player.x,
+          y: player.y,
+          vx: player.vx,
+          vy: player.vy,
+          core: stats.core,
+          w: rules.W,
+          h: rules.H,
+        });
         if (!q) continue;
         const d = Math.hypot(q.x - player.x, q.y - player.y);
         if (d >= dist) continue;
@@ -166,8 +272,25 @@ function createRoom(name, dispose) {
           best = { ghost, d, self };
         }
       }
+      if (player.iframes > 0) {
+        player.iframes--;
+        continue;
+      }
       if (!best) continue;
+      if (player.shield > 0) {
+        player.shield--;
+        player.iframes = rules.IFRAMES;
+        room.events.push({ type: 'block', id: player.id, x: player.x, y: player.y, self: best.self });
+        continue;
+      }
+      if (player.hp > 1) {
+        player.hp--;
+        player.iframes = rules.IFRAMES;
+        room.events.push({ type: 'hurt', id: player.id, hp: player.hp, x: player.x, y: player.y, self: best.self });
+        continue;
+      }
       player.mode = 'dead';
+      player.hp = 0;
       player.vx = 0;
       player.vy = 0;
       player.rec = [];
@@ -182,14 +305,41 @@ function createRoom(name, dispose) {
     }
   }
 
+  function pullStars() {
+    const scale = rules.unit(rules.W, rules.H) / 540;
+    const playing = alive();
+    for (let i = 0; i < room.stars.length; i++) {
+      const star = room.stars[i];
+      let best = null;
+      for (let p = 0; p < playing.length; p++) {
+        const player = playing[p];
+        const stats = rules.statsOf(player.gear);
+        if (!stats.pull) continue;
+        const attract = stats.attract * scale;
+        const dist = Math.hypot(star.x - player.x, star.y - player.y);
+        if (dist < 1 || dist > attract) continue;
+        if (!best || dist < best.dist) best = { player: player, dist: dist, pull: stats.pull * scale };
+      }
+      if (!best) continue;
+      const step = Math.min(best.pull, best.dist);
+      star.x += (best.player.x - star.x) / best.dist * step;
+      star.y += (best.player.y - star.y) / best.dist * step;
+    }
+  }
+
   function collectStars() {
-    const got = rules.unit(rules.W, rules.H) * 0.04;
+    const base = rules.unit(rules.W, rules.H) * 0.04;
     const playing = alive();
     room.stars = room.stars.filter((star) => {
-      for (const player of playing) {
-        if (Math.hypot(star.x - player.x, star.y - player.y) >= got) continue;
-        player.score += 10 * room.round;
-        room.events.push({ type: 'pick', id: player.id, x: star.x, y: star.y });
+      for (let i = 0; i < playing.length; i++) {
+        const player = playing[i];
+        const stats = rules.statsOf(player.gear);
+        if (Math.hypot(star.x - player.x, star.y - player.y) >= base * stats.magnet) continue;
+        const gain = stats.reward || 1;
+        player.score += Math.round(rules.SCORE_STAR * room.round * stats.score * gain);
+        const coins = Math.round(rules.T_STAR * gain);
+        player.gear.t += coins;
+        room.events.push({ type: 'pick', id: player.id, x: star.x, y: star.y, t: coins });
         return false;
       }
       return true;
@@ -199,7 +349,12 @@ function createRoom(name, dispose) {
   function finishRound() {
     for (const player of room.players.values()) {
       if (player.mode !== 'play') continue;
-      player.score += 50;
+      const stats = rules.statsOf(player.gear);
+      const gain = stats.reward || 1;
+      player.score += Math.round(rules.SCORE_ROUND * stats.score * gain);
+      player.gear.t += Math.round(rules.T_ROUND * gain);
+      rules.noteSamples(player.gear);
+      rules.openStock(player.gear, room.seed, room.round, player.id);
       if (player.rec.length) {
         room.ghosts.push({
           ownerId: player.id,
@@ -209,12 +364,44 @@ function createRoom(name, dispose) {
         });
       }
       player.rec = [];
+      player.ready = false;
+      player.dashLeft = 0;
+      syncVitals(player, true);
     }
-    room.round += 1;
-    room.step = 0;
-    room.t = 0;
+    room.stars = [];
+    room.state = 'shop';
+    room.shopLeft = rules.SHOP_STEPS;
     room.banner = 70;
+    room.events.push({ type: 'shop' });
+  }
+
+  function startNextRound() {
+    room.state = 'play';
+    room.round += 1;
+    room.t = 0;
+    room.step = 0;
+    room.shopLeft = 0;
+    room.banner = 70;
+    room.stars = [];
+    for (const player of room.players.values()) {
+      player.ready = false;
+      player.rec = [];
+      player.dashLeft = 0;
+      player.dashCd = 0;
+      if (player.mode === 'play') syncVitals(player, true);
+    }
+    fillStars();
     room.events.push({ type: 'round' });
+  }
+
+  function shopTick() {
+    if (room.banner > 0) room.banner--;
+    for (const player of alive()) movePlayer(player);
+    if (room.shopLeft > 0) room.shopLeft--;
+    const warmed = room.shopLeft <= rules.SHOP_STEPS - rules.SHOP_MIN;
+    const playing = alive();
+    const allReady = playing.length > 0 && playing.every((player) => player.ready);
+    if (room.shopLeft <= 0 || (warmed && allReady)) startNextRound();
   }
 
   function playTick() {
@@ -223,20 +410,40 @@ function createRoom(name, dispose) {
       room.state = 'over';
       return;
     }
-    for (const player of alive()) {
-      rules.applyMove(player, player.input, rules.W, rules.H);
-      player.rec.push({ x: player.x, y: player.y });
-    }
+    for (const player of alive()) movePlayer(player);
     room.step += 1;
     room.t = room.step - 1;
+    for (const player of alive()) {
+      const stats = rules.statsOf(player.gear);
+      const nudge = rules.hallucinationNudge(room.step, stats.noise, player.nudgeSalt);
+      if (nudge.x || nudge.y) {
+        player.x = Math.max(12, Math.min(rules.W - 12, player.x + nudge.x));
+        player.y = Math.max(12, Math.min(rules.H - 12, player.y + nudge.y));
+      }
+      player.rec.push({ x: player.x, y: player.y });
+    }
     collide();
     if (!alive().length) {
       room.state = 'over';
       return;
     }
+    pullStars();
     collectStars();
     fillStars();
     if (room.step >= rules.STEPS) finishRound();
+  }
+
+  function deny(player, reason) {
+    room.events.push({ type: 'deny', id: player.id, reason: reason, text: rules.REASON[reason] || reason });
+  }
+
+  function changeGear(player, result) {
+    if (!result.ok) {
+      deny(player, result.reason);
+      return;
+    }
+    syncVitals(player, true);
+    room.events.push({ type: 'gear', id: player.id });
   }
 
   function beginMatch() {
@@ -249,6 +456,7 @@ function createRoom(name, dispose) {
     room.stars = [];
     room.events = [];
     room.epoch += 1;
+    room.seed = (Math.random() * 0x100000000) >>> 0;
     for (const player of room.players.values()) {
       player.mode = 'play';
       player.score = 0;
@@ -258,7 +466,9 @@ function createRoom(name, dispose) {
       player.vy = 0;
       player.rec = [];
       player.input = { ax: 0, ay: 0, mouse: null, keyboard: false };
+      blankCombat(player);
     }
+    room.shopLeft = 0;
     fillStars();
     broadcast();
   }
@@ -270,6 +480,11 @@ function createRoom(name, dispose) {
         for (const player of room.players.values()) {
           if (player.mode === 'lobby') rules.applyMove(player, player.input, rules.W, rules.H);
         }
+        broadcast();
+        return;
+      }
+      if (room.state === 'shop') {
+        shopTick();
         broadcast();
         return;
       }
@@ -297,11 +512,12 @@ function createRoom(name, dispose) {
         y: rules.H / 2,
         vx: 0,
         vy: 0,
-        mode: room.state === 'play' ? 'spectate' : 'lobby',
+        mode: room.state === 'play' || room.state === 'shop' ? 'spectate' : 'lobby',
         score: 0,
         rec: [],
         input: { ax: 0, ay: 0, mouse: null, keyboard: false },
       };
+      blankCombat(player);
       player.x = Math.max(20, Math.min(rules.W - 20, player.x));
       room.players.set(id, player);
       room.bySocket.set(socket, player);
@@ -323,10 +539,72 @@ function createRoom(name, dispose) {
         mouse,
         keyboard: !!(msg && msg.keyboard),
       };
+      if (msg && msg.dash) startDash(player);
+    },
+    dash(socket) {
+      const player = room.bySocket.get(socket);
+      if (!player) return;
+      startDash(player);
+    },
+    buy(socket, id) {
+      const player = room.bySocket.get(socket);
+      if (!player || player.mode !== 'play') return;
+      if (room.state !== 'shop') {
+        deny(player, 'shop_only');
+        return;
+      }
+      changeGear(player, rules.buy(player.gear, id));
+    },
+    train(socket, id) {
+      const player = room.bySocket.get(socket);
+      if (!player || player.mode !== 'play') return;
+      if (room.state !== 'shop') {
+        deny(player, 'shop_only');
+        return;
+      }
+      changeGear(player, rules.train(player.gear, id));
+    },
+    equip(socket, id) {
+      const player = room.bySocket.get(socket);
+      if (!player || player.mode !== 'play') return;
+      if (room.state !== 'shop') {
+        deny(player, 'shop_only');
+        return;
+      }
+      changeGear(player, rules.equip(player.gear, id));
+    },
+    unequip(socket, slot) {
+      const player = room.bySocket.get(socket);
+      if (!player || player.mode !== 'play') return;
+      if (room.state !== 'shop') {
+        deny(player, 'shop_only');
+        return;
+      }
+      changeGear(player, rules.unequip(player.gear, slot));
+    },
+    ready(socket) {
+      const player = room.bySocket.get(socket);
+      if (!player || player.mode !== 'play' || room.state !== 'shop') return;
+      player.ready = true;
+    },
+    debugCoins(playerName, amount) {
+      for (const player of room.players.values()) {
+        if (player.name === playerName) player.gear.t = amount;
+      }
+    },
+    debugForge(playerName, spec) {
+      const forced = spec || {};
+      for (const player of room.players.values()) {
+        if (player.name !== playerName) continue;
+        const item = rules.rollPiece((forced.seed || 1) >>> 0, forced);
+        if (forced.samples) item.samples = forced.samples;
+        player.gear.equipped[item.slot] = item;
+        syncVitals(player, true);
+      }
     },
     requestStart(socket) {
       if (!room.bySocket.has(socket)) return;
-      if (room.state === 'play') return;
+      if (room.state === 'play' || room.state === 'shop') return;
       beginMatch();
     },
     leave(socket) {
@@ -387,12 +665,30 @@ function createApp(options = {}) {
       if (msg.type === 'hello') room.hello(socket, msg);
       else if (msg.type === 'input') room.input(socket, msg);
       else if (msg.type === 'start') room.requestStart(socket);
+      else if (msg.type === 'dash') room.dash(socket);
+      else if (msg.type === 'buy') room.buy(socket, msg.id);
+      else if (msg.type === 'train') room.train(socket, msg.id);
+      else if (msg.type === 'equip') room.equip(socket, msg.id);
+      else if (msg.type === 'unequip') room.unequip(socket, msg.slot);
+      else if (msg.type === 'ready') room.ready(socket);
     });
     socket.on('close', () => room.leave(socket));
   });
 
   return {
     tickAll,
+    debugCoins(roomName, playerName, amount) {
+      if (!options.testGrant) throw new Error('debug coins are off');
+      const room = rooms.get(roomName);
+      if (!room) throw new Error('no room');
+      room.debugCoins(playerName, amount);
+    },
+    debugForge(roomName, playerName, spec) {
+      if (!options.testGrant) throw new Error('debug forge is off');
+      const room = rooms.get(roomName);
+      if (!room) throw new Error('no room');
+      room.debugForge(playerName, spec);
+    },
     listen(port = 0, host = '127.0.0.1') {
       return new Promise((resolve) => {
         server.listen(port, host, () => {

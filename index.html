@@ -24,6 +24,7 @@
   <button id="leave" type="button" class="quiet" hidden>退出多人</button>
 </div>
 <canvas id="c"></canvas>
+<script src="shared.js"></script>
 <script>
 const c = document.getElementById('c');
 const x = c.getContext('2d');
@@ -53,6 +54,22 @@ let keys = {};
 let mouse = null;
 let shake = 0;
 let banner = 0;
+const Rules = window.EchoRules;
+let gear = Rules.emptyGear();
+let hp = 1;
+let maxHp = 1;
+let shield = 0;
+let iframes = 0;
+let dashLeft = 0;
+let dashCd = 0;
+let dashX = 1;
+let dashY = 0;
+let shopLeft = 0;
+let shopReady = false;
+let shopHits = [];
+let gearMsg = '';
+let gearMsgT = 0;
+let soloSeed = 1;
 let NET = {
   active: false,
   connecting: false,
@@ -71,7 +88,10 @@ const echoLayer = document.createElement('canvas');
 const ex = echoLayer.getContext('2d');
 
 function unit() { return Math.min(LW, LH); }
-function moveSpeed() { return unit() * 0.44; }
+function moveSpeed() {
+  const mul = state === 'play' || state === 'shop' ? Rules.statsOf(gear).speed : 1;
+  return unit() * 0.44 * mul;
+}
 function bodyR() { return unit() * 0.02; }
 function collectR() { return unit() * 0.04; }
 function collideDist() {
@@ -177,6 +197,19 @@ function reset() {
   parts = [];
   shake = 0;
   banner = 0;
+  gear = Rules.emptyGear();
+  const seedQuery = new URLSearchParams(location.search).get('seed');
+  soloSeed = seedQuery != null && seedQuery !== '' ? (Number(seedQuery) >>> 0) : ((Math.random() * 0x100000000) >>> 0);
+  hp = 1;
+  maxHp = 1;
+  shield = 0;
+  iframes = 0;
+  dashLeft = 0;
+  dashCd = 0;
+  shopLeft = 0;
+  shopReady = false;
+  gearMsg = '';
+  gearMsgT = 0;
   spawnStar();
   spawnStar();
   state = 'play';
@@ -197,18 +230,106 @@ function die() {
 function finishRound() {
   ghosts.push(rec);
   rec = [];
-  t = 0;
-  round += 1;
-  score += 50;
+  const stats = Rules.statsOf(gear);
+  const gain = stats.reward || 1;
+  score += Math.round(Rules.SCORE_ROUND * stats.score * gain);
+  gear.t += Math.round(Rules.T_ROUND * gain);
+  Rules.noteSamples(gear);
+  Rules.openStock(gear, soloSeed, round, 'solo');
+  stars = [];
+  state = 'shop';
+  shopLeft = Rules.SHOP_STEPS;
+  shopReady = false;
   banner = 70;
+  maxHp = stats.maxHp;
+  hp = maxHp;
+  shield = stats.blocks;
+  iframes = 0;
+  dashLeft = 0;
   beep(330, 0.15, 'triangle', 0.16);
   setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
-  boom(p.x, p.y, '#6cf', 24);
+  if (p) boom(p.x, p.y, '#6cf', 24);
   shake = unit() * 0.008;
+}
+
+function endShop() {
+  shopReady = false;
+  round += 1;
+  t = 0;
+  rec = [];
+  stars = [];
+  state = 'play';
+  banner = 70;
+  const stats = Rules.statsOf(gear);
+  maxHp = stats.maxHp;
+  hp = maxHp;
+  shield = stats.blocks;
+  iframes = 0;
+  dashLeft = 0;
+  dashCd = 0;
+  let guard = 0;
+  while (stars.length < starGoal() && guard++ < 4) spawnStar();
+  beep(330, 0.15, 'triangle', 0.16);
+  setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
+}
+
+function facing() {
+  let ix = (keys.d || keys.arrowright ? 1 : 0) - (keys.a || keys.arrowleft ? 1 : 0);
+  let iy = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
+  if (ix || iy) {
+    const l = Math.hypot(ix, iy);
+    return { x: ix / l, y: iy / l };
+  }
+  if (mouse && p) {
+    const l = Math.hypot(mouse.x - p.x, mouse.y - p.y);
+    if (l > 4) return { x: (mouse.x - p.x) / l, y: (mouse.y - p.y) / l };
+  }
+  const speed = Math.hypot(vx, vy);
+  if (speed > 1) return { x: vx / speed, y: vy / speed };
+  const l = Math.hypot(dashX, dashY) || 1;
+  return { x: dashX / l, y: dashY / l };
+}
+
+function tryDash() {
+  if (state !== 'play') return;
+  if (NET.active) {
+    NET.send({ type: 'dash' });
+    const stats = Rules.statsOf(gear);
+    if (!stats.dash || dashCd > 0 || dashLeft > 0) return;
+    const dir = facing();
+    dashX = dir.x;
+    dashY = dir.y;
+    dashLeft = stats.dash.frames;
+    dashCd = stats.dash.cd;
+    return;
+  }
+  const stats = Rules.statsOf(gear);
+  if (!stats.dash || dashCd > 0 || dashLeft > 0) return;
+  const dir = facing();
+  dashX = dir.x;
+  dashY = dir.y;
+  dashLeft = stats.dash.frames;
+  dashCd = stats.dash.cd;
 }
 
 function movePlayer() {
   const dt = 1 / 60;
+  if (dashLeft > 0 && p) {
+    const stats = Rules.statsOf(gear);
+    const mul = stats.dash ? stats.dash.speed : 1;
+    const burst = unit() * 0.44 * mul;
+    const len = Math.hypot(dashX, dashY) || 1;
+    vx = dashX / len * burst;
+    vy = dashY / len * burst;
+    p.x += vx * dt;
+    p.y += vy * dt;
+    const m = bodyR() + 2;
+    p.x = Math.max(m, Math.min(LW - m, p.x));
+    p.y = Math.max(m, Math.min(LH - m, p.y));
+    dashLeft--;
+    return;
+  }
+  if (dashCd > 0) dashCd--;
   const max = moveSpeed();
   let ix = (keys.d || keys.arrowright ? 1 : 0) - (keys.a || keys.arrowleft ? 1 : 0);
   let iy = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
@@ -241,28 +362,87 @@ function movePlayer() {
   p.y = Math.max(m, Math.min(LH - m, p.y));
 }
 
+function pullStars() {
+  const stats = Rules.statsOf(gear);
+  if (!stats.pull || !p) return;
+  const scale = unit() / 540;
+  const attract = stats.attract * scale;
+  const pull = stats.pull * scale;
+  stars.forEach(s => {
+    const dist = Math.hypot(s.x - p.x, s.y - p.y);
+    if (dist < 1 || dist > attract) return;
+    const step = Math.min(pull, dist);
+    s.x += (p.x - s.x) / dist * step;
+    s.y += (p.y - s.y) / dist * step;
+  });
+}
+
+function sufferEcho() {
+  if (shield > 0) {
+    shield--;
+    iframes = Rules.IFRAMES;
+    beep(880, 0.08, 'square', 0.08);
+    boom(p.x, p.y, '#7ad7ff', 16);
+    return false;
+  }
+  if (hp > 1) {
+    hp--;
+    iframes = Rules.IFRAMES;
+    beep(180, 0.12, 'square', 0.12);
+    boom(p.x, p.y, '#ff8a80', 18);
+    shake = unit() * 0.012;
+    return false;
+  }
+  die();
+  return true;
+}
+
+function shopStep() {
+  if (gearMsgT > 0) gearMsgT--;
+  if (banner > 0) banner--;
+  if (p) movePlayer();
+  if (shopLeft > 0) shopLeft--;
+  const warmed = shopLeft <= Rules.SHOP_STEPS - Rules.SHOP_MIN;
+  if (shopLeft <= 0 || (warmed && shopReady)) endShop();
+}
+
 function step() {
   parts.forEach(q => { q.x += q.vx; q.y += q.vy; q.vx *= 0.96; q.vy *= 0.96; q.l--; });
   parts = parts.filter(q => q.l > 0);
   if (shake > 0) shake *= 0.86;
+  if (gearMsgT > 0 && state !== 'shop') gearMsgT--;
+  if (state === 'shop') return shopStep();
   if (banner > 0) banner--;
   if (state !== 'play') return;
 
   movePlayer();
+  const stats = Rules.statsOf(gear);
+  const nudge = Rules.hallucinationNudge(rec.length + 1, stats.noise, soloSeed);
+  if ((nudge.x || nudge.y) && p) {
+    const edge = bodyR() + 2;
+    p.x = Math.max(edge, Math.min(LW - edge, p.x + nudge.x));
+    p.y = Math.max(edge, Math.min(LH - edge, p.y + nudge.y));
+  }
   rec.push({x: p.x, y: p.y});
   t = rec.length - 1;
 
-  if (!protecting()) {
+  if (iframes > 0) iframes--;
+  else if (!protecting()) {
+    let hit = false;
     for (const g of ghosts) {
-      const q = g[Math.min(t, g.length - 1)];
-      if (q && Math.hypot(q.x - p.x, q.y - p.y) < collideDist()) { die(); return; }
+      const q = echoHead(g);
+      if (q && Math.hypot(q.x - p.x, q.y - p.y) < collideDist()) { hit = true; break; }
     }
+    if (hit && sufferEcho()) return;
   }
 
-  const got = collectR();
+  pullStars();
+  const got = collectR() * stats.magnet;
   stars = stars.filter(s => {
     if (Math.hypot(s.x - p.x, s.y - p.y) < got) {
-      score += 10 * round;
+      const gain = stats.reward || 1;
+      score += Math.round(Rules.SCORE_STAR * round * stats.score * gain);
+      gear.t += Math.round(Rules.T_STAR * gain);
       boom(s.x, s.y, '#ffd54a', 14);
       beep(600 + Math.random() * 400, 0.1, 'triangle', 0.12);
       return false;
@@ -273,6 +453,20 @@ function step() {
   while (stars.length < starGoal() && guard++ < 4) spawnStar();
 
   if (rec.length >= STEPS) finishRound();
+}
+
+function echoHead(g) {
+  if (!g || !g.length) return null;
+  const wearer = {
+    x: p ? p.x : 0,
+    y: p ? p.y : 0,
+    vx: vx,
+    vy: vy,
+    core: Rules.statsOf(gear).core,
+    w: LW,
+    h: LH,
+  };
+  return Rules.echoAt(g, Math.max(0, t), wearer);
 }
 
 function strokeRange(ctx, pts, a, b, style, width) {
@@ -295,6 +489,85 @@ function strokeRange(ctx, pts, a, b, style, width) {
 function protecting() {
   if (NET.active) return NET.grace;
   return ghosts.length > 0 && t < GRACE;
+}
+
+function warnLead() {
+  if (NET.active) {
+    const mine = NET.myPlayer();
+    return mine && mine.warnAt ? mine.warnAt : Rules.WARN_BASE;
+  }
+  return Rules.statsOf(gear).warn;
+}
+
+function viewAsItem(v) {
+  return {
+    uid: v.uid,
+    slot: v.slot,
+    tier: v.tier || 0,
+    affixes: v.affixes || [],
+    negative: v.negative || null,
+    core: v.core || null,
+    samples: v.samples || 0,
+    name: v.name,
+    mark: v.mark,
+    color: v.color,
+    price: v.price || 0,
+  };
+}
+
+function wornGear() {
+  if (NET.active) {
+    const mine = NET.myPlayer();
+    return mine && mine.gear ? mine.gear : [];
+  }
+  return Rules.publicGear(gear);
+}
+
+function currentOffers() {
+  return NET.active ? (NET.offers || []) : Rules.offers(gear);
+}
+
+function currentBag() {
+  return NET.active ? (NET.bag || []) : Rules.bagView(gear);
+}
+
+function currentCoins() {
+  return NET.active ? (NET.coins || 0) : gear.t;
+}
+
+function currentShopLeft() {
+  return NET.active ? (NET.shopLeft || 0) : shopLeft;
+}
+
+function noteGear(text) {
+  gearMsg = text || '';
+  gearMsgT = text ? 150 : 0;
+}
+
+function actShop(hit) {
+  if (!hit) return;
+  if (NET.active) {
+    if (hit.act === 'buy') NET.send({ type: 'buy', id: hit.uid });
+    else if (hit.act === 'train') NET.send({ type: 'train', id: hit.uid });
+    else if (hit.act === 'equip') NET.send({ type: 'equip', id: hit.uid });
+    else if (hit.act === 'unequip') NET.send({ type: 'unequip', slot: hit.slot });
+    else if (hit.act === 'ready') NET.send({ type: 'ready' });
+    return;
+  }
+  let result = { ok: true, reason: '' };
+  if (hit.act === 'buy') result = Rules.buy(gear, hit.uid);
+  else if (hit.act === 'train') result = Rules.train(gear, hit.uid);
+  else if (hit.act === 'equip') result = Rules.equip(gear, hit.uid);
+  else if (hit.act === 'unequip') result = Rules.unequip(gear, hit.slot);
+  else if (hit.act === 'ready') { shopReady = true; return; }
+  if (!result.ok) noteGear(Rules.REASON[result.reason] || result.reason);
+  else {
+    noteGear('');
+    const stats = Rules.statsOf(gear);
+    maxHp = stats.maxHp;
+    hp = maxHp;
+    shield = stats.blocks;
+  }
 }
 
 function roundProgress() {
@@ -334,6 +607,39 @@ function drawSpark(sx, sy, r) {
   x.fill();
 }
 
+function drawBadges(px, py, list) {
+  if (!list || !list.length) return;
+  const start = px - ((list.length - 1) * 14) / 2;
+  list.forEach((g, i) => {
+    const bx = start + i * 14;
+    const by = py - bodyR() - 18;
+    x.beginPath();
+    x.fillStyle = g.color || '#fff';
+    x.arc(bx, by, 6, 0, Math.PI * 2);
+    x.fill();
+    x.fillStyle = '#1a1020';
+    x.font = 'bold 8px ui-sans-serif,system-ui,sans-serif';
+    x.textAlign = 'center';
+    x.fillText(g.mark, bx, by + 3);
+  });
+}
+
+function drawPips(px, py, hearts, cap, blocks) {
+  if ((cap || 1) <= 1 && !blocks) return;
+  const n = Math.max(cap || 1, hearts || 0);
+  const start = px - ((n - 1) * 8) / 2;
+  for (let i = 0; i < n; i++) {
+    x.fillStyle = i < hearts ? '#ff8a80' : 'rgba(255,255,255,.25)';
+    x.fillRect(start + i * 8 - 2, py + bodyR() + 4, 4, 4);
+  }
+  if (blocks) {
+    x.fillStyle = '#7ad7ff';
+    x.font = '10px ui-sans-serif,system-ui,sans-serif';
+    x.textAlign = 'left';
+    x.fillText('盾' + blocks, px + bodyR() + 4, py + 4);
+  }
+}
+
 function drawWorld() {
   x.strokeStyle = 'rgba(255,255,255,.1)';
   x.lineWidth = 2;
@@ -352,10 +658,21 @@ function drawWorld() {
     ghosts.forEach((g, i) => {
       const n = Math.min(t, g.length - 1);
       const age = ghosts.length - 1 - i;
-      const q = g[Math.max(0, n)];
+      const head = echoHead(g);
+      const q = head || g[Math.max(0, n)];
       strokeRange(ex, g, 0, g.length - 1, ghostColor(i, Math.max(0.28, 0.58 - age * 0.05)), 3.2);
       strokeRange(ex, g, n - 28, n, ghostColor(i, 0.9), 3);
       strokeRange(ex, g, n, Math.min(g.length - 1, n + 32), ghostColor(i, 1), 3.6);
+      if (head && (head.x !== head.baseX || head.y !== head.baseY)) {
+        ex.strokeStyle = '#ffcc66';
+        ex.lineWidth = 2;
+        ex.setLineDash([3, 3]);
+        ex.beginPath();
+        ex.moveTo(head.baseX, head.baseY);
+        ex.lineTo(head.x, head.y);
+        ex.stroke();
+        ex.setLineDash([]);
+      }
       ex.fillStyle = ghostColor(i, 0.95);
       ex.beginPath();
       ex.arc(q.x, q.y, bodyR(), 0, Math.PI * 2);
@@ -372,15 +689,14 @@ function drawWorld() {
     x.drawImage(echoLayer, 0, 0);
     x.restore();
     ghosts.forEach((g, i) => {
-      const n = Math.min(t, g.length - 1);
-      const q = g[Math.max(0, n)];
-      drawFootRing(q, ghostColor(i, 1), safe);
+      const head = echoHead(g);
+      if (head) drawFootRing(head, ghostColor(i, 1), safe);
     });
 
     const trailColor = NET.active && NET.color && NET.fade ? NET.fade(NET.color, 0.78) : 'rgba(130,220,255,.78)';
     if (rec.length > 1) strokeRange(x, rec, 0, rec.length - 1, trailColor, 2.6);
 
-    const warn = state === 'play' && roundProgress() >= STEPS - 75;
+    const warn = state === 'play' && roundProgress() >= STEPS - warnLead();
     if (warn) {
       const marks = [];
       ghosts.forEach(g => { if (g[0]) marks.push(g[0]); });
@@ -403,6 +719,12 @@ function drawWorld() {
     });
 
     if (p && state !== 'menu') {
+      if (!NET.active) {
+        drawBadges(p.x, p.y, wornGear());
+        drawPips(p.x, p.y, hp, maxHp, shield);
+      }
+      x.save();
+      if (iframes > 0 && Math.floor(t / 2) % 2 === 0) x.globalAlpha = 0.35;
       x.fillStyle = NET.active && NET.color ? NET.color : '#7ad7ff';
       x.shadowColor = '#6cf';
       x.shadowBlur = 18;
@@ -410,6 +732,7 @@ function drawWorld() {
       x.arc(p.x, p.y, bodyR(), 0, Math.PI * 2);
       x.fill();
       x.shadowBlur = 0;
+      x.restore();
     }
   }
 
@@ -422,7 +745,7 @@ function drawWorld() {
 
   if (state === 'play') {
     const left = Math.max(0, STEPS - roundProgress()) / 60;
-    const hot = roundProgress() >= STEPS - 75;
+    const hot = roundProgress() >= STEPS - warnLead();
     x.fillStyle = 'rgba(255,255,255,.12)';
     x.fillRect(16, LH - 14, LW - 32, 5);
     x.fillStyle = hot ? '#ff8a80' : '#6cf';
@@ -442,6 +765,114 @@ function drawWorld() {
   }
 }
 
+function hitButton(label, hx, hy, hw, hh, act, extra) {
+  x.fillStyle = 'rgba(255,255,255,.06)';
+  x.strokeStyle = 'rgba(255,255,255,.5)';
+  x.lineWidth = 1;
+  x.beginPath();
+  x.rect(hx, hy, hw, hh);
+  x.fill();
+  x.stroke();
+  x.fillStyle = '#fff';
+  x.font = '12px ui-sans-serif,system-ui,sans-serif';
+  x.textAlign = 'center';
+  x.fillText(label, hx + hw / 2, hy + hh * 0.68);
+  shopHits.push(Object.assign({ x: hx, y: hy, w: hw, h: hh, act: act }, extra || {}));
+}
+
+function drawShop() {
+  shopHits = [];
+  const offers = currentOffers();
+  const bag = currentBag();
+  const panel = { x: 28, y: 12, w: LW - 56, h: LH - 24 };
+  x.fillStyle = 'rgba(8,10,22,.94)';
+  x.fillRect(panel.x, panel.y, panel.w, panel.h);
+  x.strokeStyle = 'rgba(255,255,255,.28)';
+  x.lineWidth = 1;
+  x.strokeRect(panel.x, panel.y, panel.w, panel.h);
+  x.textAlign = 'left';
+  x.font = 'bold 18px ui-sans-serif,system-ui,sans-serif';
+  x.fillStyle = '#ffec27';
+  x.fillText('轮间推理', panel.x + 16, panel.y + 26);
+  x.font = '14px ui-sans-serif,system-ui,sans-serif';
+  x.fillStyle = '#fff';
+  x.fillText('T ' + currentCoins() + '   ' + (currentShopLeft() / 60).toFixed(1) + 's', panel.x + 130, panel.y + 26);
+  if (gearMsg) {
+    x.fillStyle = '#ff8a80';
+    x.textAlign = 'right';
+    x.fillText(gearMsg, panel.x + panel.w - 16, panel.y + 26);
+    x.textAlign = 'left';
+  }
+  x.font = '12px ui-sans-serif,system-ui,sans-serif';
+  x.fillStyle = 'rgba(255,255,255,.72)';
+  x.fillText('种子生成词条。训练用 T 币和对局样本升一代：v1 → v2 → v3 → 前沿模型。幻觉是负面词条。', panel.x + 16, panel.y + 46);
+  offers.forEach((offer, i) => {
+    const y = panel.y + 58 + i * 52;
+    x.beginPath();
+    x.fillStyle = offer.color;
+    x.arc(panel.x + 28, y + 16, 10, 0, Math.PI * 2);
+    x.fill();
+    x.fillStyle = '#1a1020';
+    x.font = 'bold 9px ui-sans-serif,system-ui,sans-serif';
+    x.textAlign = 'center';
+    x.fillText(offer.mark, panel.x + 28, y + 19);
+    x.textAlign = 'left';
+    x.fillStyle = '#fff';
+    x.font = '14px ui-sans-serif,system-ui,sans-serif';
+    x.fillText(offer.name + ' · ' + offer.slotName + ' · ' + offer.tierLabel + ' · 参数量 ' + offer.params, panel.x + 48, y + 14);
+    x.fillStyle = 'rgba(255,255,255,.78)';
+    x.font = '12px ui-sans-serif,system-ui,sans-serif';
+    x.fillText((offer.lines || []).slice(0, 3).join(' · '), panel.x + 48, y + 32);
+    hitButton(offer.price + 'T 接入', panel.x + panel.w - 132, y + 8, 108, 28, 'buy', { uid: offer.uid });
+  });
+  const slots = wornGear();
+  const slotY = panel.y + 62 + Math.max(offers.length, 1) * 52;
+  x.font = '13px ui-sans-serif,system-ui,sans-serif';
+  x.fillStyle = '#fff';
+  x.textAlign = 'left';
+  Rules.SLOTS.forEach((slot, i) => {
+    const worn = slots.filter(g => g.slot === slot)[0];
+    const col = panel.x + 16 + i * 290;
+    x.fillStyle = '#fff';
+    x.fillText(Rules.SLOT_NAME[slot] + ' ' + (worn ? worn.mark + ' ' + worn.tierLabel : '空'), col, slotY + 16);
+    if (!worn) return;
+    hitButton('卸下', col + 108, slotY, 46, 22, 'unequip', { slot: slot });
+    if (worn.trainCost) {
+      const ready = (worn.samples || 0) >= worn.trainSamples;
+      hitButton((ready ? '训练 ' : '样本 ') + worn.samples + '/' + worn.trainSamples, col + 160, slotY, 112, 22, 'train', { uid: worn.uid });
+    }
+  });
+  const bagY = slotY + 36;
+  x.fillStyle = '#fff';
+  x.font = '13px ui-sans-serif,system-ui,sans-serif';
+  x.fillText('背包', panel.x + 16, bagY + 16);
+  for (let i = 0; i < Rules.BAG; i++) {
+    const item = bag[i];
+    const bx = panel.x + 62 + i * 78;
+    x.strokeStyle = 'rgba(255,255,255,.4)';
+    x.strokeRect(bx, bagY, 70, 28);
+    if (!item) continue;
+    x.fillStyle = item.color;
+    x.font = '12px ui-sans-serif,system-ui,sans-serif';
+    x.textAlign = 'center';
+    x.fillText(item.mark + ' ' + item.tierLabel, bx + 35, bagY + 18);
+    shopHits.push({ x: bx, y: bagY, w: 70, h: 28, act: 'equip', uid: item.uid });
+  }
+  hitButton('准备好了', panel.x + panel.w - 140, bagY, 112, 28, 'ready', {});
+  x.textAlign = 'left';
+  x.fillStyle = 'rgba(255,255,255,.55)';
+  x.font = '12px ui-sans-serif,system-ui,sans-serif';
+  x.fillText('1–3 接入货架，4–6 训练头 / 身 / 饰品。预判核沿你的速度提前走，回避核绕开你。', panel.x + 16, panel.y + panel.h - 14);
+}
+
+function shopHitAt(pt) {
+  for (let i = shopHits.length - 1; i >= 0; i--) {
+    const h = shopHits[i];
+    if (pt.x >= h.x && pt.x <= h.x + h.w && pt.y >= h.y && pt.y <= h.y + h.h) return h;
+  }
+  return null;
+}
+
 function drawOverlay() {
   x.fillStyle = '#fff';
   x.textAlign = 'center';
@@ -457,6 +888,7 @@ function drawOverlay() {
       '碰到任何一个过去的自己就输了',
       '换轮后先离开刚画的线，回声会沿它走来',
       '鼠标或触摸跟随，也可以用 WASD / 方向键',
+      '轮间推理用 T 币接入装备，再用样本训练升代。Shift 冲刺',
       '点击、触摸或空格开始',
     ];
     lines.forEach((s, i) => x.fillText(s, LW / 2, LH / 2 - u * 0.04 + i * u * 0.048));
@@ -495,11 +927,20 @@ function draw() {
   drawWorld();
   x.restore();
   drawOverlay();
+  if (state === 'shop') drawShop();
 
-  if (state === 'play') {
+  if (state === 'play' || state === 'shop') {
     const left = Math.max(0, STEPS - roundProgress()) / 60;
-    ui.textContent = '第 ' + round + ' 轮  得分 ' + score + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (protecting() ? '  离开路线' : '') + (NET.active ? NET.hudSuffix() : '');
+    const wornStats = Rules.statsOf(gear);
+    const coreBit = wornStats.core ? (wornStats.core.kind === 'predict' ? '  预判核' : '  回避核') : '';
+    const noiseBit = wornStats.noise ? '  幻觉' : '';
+    const bits = state === 'shop'
+      ? ('推理  T' + currentCoins() + '  ' + (currentShopLeft() / 60).toFixed(1) + 's' + coreBit)
+      : ('第 ' + round + ' 轮  得分 ' + score + '  T' + currentCoins() + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (hp > 0 && maxHp > 1 ? '  HP' + hp : '') + (shield ? '  盾' + shield : '') + coreBit + noiseBit + (protecting() ? '  离开路线' : ''));
+    ui.textContent = bits + (gearMsg && state === 'play' ? '  ' + gearMsg : '') + (NET.active ? NET.hudSuffix() : '');
   } else ui.textContent = '';
+  const dock = document.getElementById('dock');
+  if (dock && !NET.active) dock.hidden = state === 'shop';
 }
 
 window.__echo = function () {
@@ -527,7 +968,21 @@ window.__echo = function () {
     grace: protecting() ? GRACE - t : 0,
     flicker: Math.floor(t / 2) % 2 === 0 ? 0.5 : 0.15,
     footDash: protecting(),
+    coins: currentCoins(),
+    hp: hp,
+    maxHp: maxHp,
+    shield: shield,
+    shopLeft: currentShopLeft(),
+    offers: currentOffers(),
+    bag: currentBag(),
+    worn: wornGear(),
+    shopHits: shopHits.map(h => ({ x: h.x, y: h.y, w: h.w, h: h.h, act: h.act, id: h.id || '', slot: h.slot || '' })),
+    warn: warnLead(),
   };
+};
+
+window.__echoShop = function (hit) {
+  actShop(hit);
 };
 
 function overHeadline() {
@@ -546,7 +1001,20 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (BLOCK.has(k)) e.preventDefault();
   keys[k] = 1;
-  if ((k === ' ' || k === 'enter') && state !== 'play') reset();
+  if (k === 'shift' || k === 'k') tryDash();
+  if (state === 'shop' && k >= '1' && k <= '3') {
+    const offer = currentOffers()[+k - 1];
+    if (offer) actShop({ act: 'buy', uid: offer.uid });
+  }
+  if (state === 'shop' && k >= '4' && k <= '6') {
+    const slot = Rules.SLOTS[+k - 4];
+    const worn = wornGear().filter(g => g.slot === slot)[0];
+    if (worn) actShop({ act: 'train', uid: worn.uid });
+  }
+  if ((k === ' ' || k === 'enter') && state !== 'play') {
+    if (state === 'shop') actShop({ act: 'ready' });
+    else reset();
+  }
 });
 addEventListener('keyup', e => { keys[e.key.toLowerCase()] = 0; });
 
@@ -555,8 +1023,26 @@ function pointFrom(e) {
   mouse = toLogical(src.clientX, src.clientY);
 }
 c.onmousemove = pointFrom;
-c.onmousedown = e => { pointFrom(e); if (state !== 'play') reset(); };
-c.ontouchstart = e => { pointFrom(e); if (state !== 'play') reset(); e.preventDefault(); };
+c.onmousedown = e => {
+  pointFrom(e);
+  if (state === 'shop') {
+    const hit = shopHitAt(mouse);
+    if (hit) { actShop(hit); mouse = null; }
+    return;
+  }
+  if (state !== 'play') reset();
+};
+c.ontouchstart = e => {
+  pointFrom(e);
+  if (state === 'shop') {
+    const hit = shopHitAt(mouse);
+    if (hit) { actShop(hit); mouse = null; }
+    e.preventDefault();
+    return;
+  }
+  if (state !== 'play') reset();
+  e.preventDefault();
+};
 c.ontouchmove = e => { pointFrom(e); e.preventDefault(); };
 c.oncontextmenu = e => e.preventDefault();
 
@@ -646,11 +1132,20 @@ NET.applyEvents = function (events) {
     } else if (ev.type === 'pick') {
       boom(ev.x, ev.y, '#ffd54a', 14);
       if (ev.id === this.id) beep(600 + Math.random() * 400, 0.1, 'triangle', 0.12);
-    } else if (ev.type === 'round') {
+    } else if (ev.type === 'round' || ev.type === 'shop') {
       beep(330, 0.15, 'triangle', 0.16);
       setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
       if (p) boom(p.x, p.y, '#6cf', 24);
       shake = unit() * 0.008;
+    } else if (ev.type === 'deny' && ev.id === this.id) {
+      noteGear(ev.text || (Rules.REASON[ev.reason] || ''));
+    } else if (ev.type === 'block' && ev.id === this.id) {
+      beep(880, 0.08, 'square', 0.08);
+      boom(ev.x, ev.y, '#7ad7ff', 16);
+    } else if (ev.type === 'hurt' && ev.id === this.id) {
+      beep(180, 0.12, 'square', 0.12);
+      boom(ev.x, ev.y, '#ff8a80', 18);
+      shake = unit() * 0.012;
     }
   }
 };
@@ -695,9 +1190,24 @@ NET.beforeDraw = function () {
   const mine = this.myPlayer();
   this.color = mine && mine.color;
   score = mine ? mine.score : 0;
+  if (mine) {
+    const next = Rules.emptyGear();
+    next.t = s.coins || 0;
+    (mine.gear || []).forEach(g => { next.equipped[g.slot] = viewAsItem(g); });
+    (s.bag || []).forEach(g => next.bag.push(viewAsItem(g)));
+    gear = next;
+    hp = mine.hp || 0;
+    maxHp = mine.maxHp || 1;
+    shield = mine.shield || 0;
+  }
   if (s.state === 'play') state = 'play';
+  else if (s.state === 'shop') state = 'shop';
   else if (s.state === 'over') state = 'over';
   else state = 'menu';
+  this.coins = s.coins || 0;
+  this.bag = s.bag || [];
+  this.offers = s.offers || [];
+  this.shopLeft = s.shopLeft || 0;
   if (mine && mine.mode === 'play') {
     rec = this.trailOf(mine.id).map(q => ({ x: q.x, y: q.y }));
     if (!p) p = { x: mine.x, y: mine.y };
@@ -777,6 +1287,8 @@ NET.drawActors = function () {
     x.font = '12px ui-sans-serif,system-ui,sans-serif';
     x.textAlign = 'center';
     x.fillText(pl.name, px, py - bodyR() - 6);
+    drawBadges(px, py, pl.gear || []);
+    drawPips(px, py, pl.hp, pl.maxHp, pl.shield);
   }
   const meta = this.ghostMeta || [];
   for (let i = 0; i < ghosts.length && i < meta.length; i++) {
@@ -788,7 +1300,7 @@ NET.drawActors = function () {
     x.textAlign = 'center';
     x.fillText(meta[i].name, q.x, q.y - bodyR() - 8);
   }
-  if (state === 'play' && roundProgress() >= STEPS - 75) {
+  if (state === 'play' && roundProgress() >= STEPS - warnLead()) {
     for (let i = 0; i < players.length; i++) {
       const pl = players[i];
       if (pl.id === this.id || pl.mode !== 'play') continue;
@@ -804,7 +1316,7 @@ NET.updateChrome = function () {
   const leave = document.getElementById('leave');
   if (!btn) return;
   const n = this.snap && this.snap.players ? this.snap.players.length : 0;
-  if (dock) dock.hidden = this.active && this.state === 'play';
+  if (dock) dock.hidden = this.active && (this.state === 'play' || this.state === 'shop');
   if (!this.active && !this.connecting) {
     btn.hidden = false;
     btn.textContent = '多人同场';
