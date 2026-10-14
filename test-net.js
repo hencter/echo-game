@@ -70,6 +70,7 @@ async function main() {
     await testCampaign(app, port);
     await testRoles(app, port);
     await testShopCountdown(app, port);
+    await testShopHoldsPosition(app, port);
     console.log('net rules ok');
   } finally {
     await app.close();
@@ -506,6 +507,37 @@ async function testShopCountdown(app, port) {
   for (let i = 0; i < 30; i++) app.tickAll();
   await flush();
   assert(a.last.state === 'play' && a.last.round === 2 && a.last.t === 29 && a.last.grace === true, 'an unconfirmed shop still gets the full 60-step grace');
+  a.ws.close();
+  await flush();
+}
+
+async function testShopHoldsPosition(app, port) {
+  const a = await openClient(port, 'shophold', '甲');
+  await waitFor(a, (snap) => snap.players.length === 1 && snap.state === 'lobby', 'hold lobby');
+  send(a, { type: 'start' });
+  await waitFor(a, (snap) => snap.state === 'play' && snap.round === 1, 'hold start');
+  send(a, { type: 'input', ax: 1, ay: 0, mouse: null, keyboard: true });
+  await flush();
+  for (let i = 0; i < 360; i++) app.tickAll();
+  await waitFor(a, (snap) => snap.state === 'shop', 'hold shop');
+  const opened = { x: me(a.last).x, y: me(a.last).y };
+  assert(opened.x > 500, 'the player moved before the shop, saw ' + opened.x);
+  send(a, { type: 'input', ax: -1, ay: 1, mouse: { x: 40, y: 40 }, keyboard: true });
+  await flush();
+  for (let i = 0; i < 90; i++) app.tickAll();
+  await flush();
+  assert(a.last.state === 'shop', 'held input does not dismiss the shop');
+  assert(Math.abs(me(a.last).x - opened.x) < 0.01 && Math.abs(me(a.last).y - opened.y) < 0.01, 'shop keeps the opening position');
+  assert(me(a.last).vx === 0 && me(a.last).vy === 0, 'shop drops velocity');
+  const left = a.last.shopLeft;
+  for (let i = 0; i < left; i++) app.tickAll();
+  await flush();
+  assert(a.last.state === 'play' && a.last.round === 2 && a.last.t === 0, 'the timer still opens the next round');
+  assert(Math.abs(me(a.last).x - opened.x) < 0.01 && Math.abs(me(a.last).y - opened.y) < 0.01, 'round 2 starts where the shop opened');
+  assert(a.last.grace === true, 'the echoed round still starts inside grace');
+  for (let i = 0; i < 25; i++) app.tickAll();
+  await flush();
+  assert(me(a.last).x < opened.x - 15, 'movement works again after the shop, saw ' + me(a.last).x);
   a.ws.close();
   await flush();
 }

@@ -573,7 +573,11 @@ function createRoom(name, dispose) {
 
   function shopTick() {
     if (room.banner > 0) room.banner--;
-    for (const player of alive()) movePlayer(player);
+    for (const player of alive()) {
+      player.vx = 0;
+      player.vy = 0;
+      player.dashLeft = 0;
+    }
     if (room.shopLeft > 0) room.shopLeft--;
     const warmed = room.shopLeft <= rules.SHOP_STEPS - rules.SHOP_MIN;
     const playing = alive();
