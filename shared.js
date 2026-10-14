@@ -150,6 +150,17 @@
     return h >>> 0;
   }
 
+  function seatSpawn(slot, w, h) {
+    const width = w || W;
+    const height = h || H;
+    const seat = slot | 0;
+    const x = width / 2 + ((seat % 2 === 0 ? -1 : 1) * Math.ceil(seat / 2) * 48);
+    return {
+      x: Math.max(20, Math.min(width - 20, x)),
+      y: height / 2,
+    };
+  }
+
   function unit(w, h) {
     return Math.min(w, h);
   }
@@ -1186,6 +1197,7 @@
     AFFIX: AFFIX,
     CORES: CORES,
     REASON: REASON,
+    seatSpawn: seatSpawn,
     unit: unit,
     bodyR: bodyR,
     collideDist: collideDist,

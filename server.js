@@ -58,14 +58,6 @@ function claimSlot(players) {
   return -1;
 }
 
-function seatSpawn(slot) {
-  const x = rules.W / 2 + ((slot % 2 === 0 ? -1 : 1) * Math.ceil(slot / 2) * 48);
-  return {
-    x: Math.max(20, Math.min(rules.W - 20, x)),
-    y: rules.H / 2,
-  };
-}
-
 function roomOf(url) {
   const parsed = new URL(url, 'http://127.0.0.1');
   const raw = parsed.searchParams.get('room') || 'hall';
@@ -294,6 +286,12 @@ function createRoom(name, dispose) {
         role: player.role || 'echo',
         level: player.profile ? player.profile.level : 1,
         title: player.profile ? (player.profile.title || '') : '',
+        input: {
+          ax: player.input && player.input.ax ? player.input.ax : 0,
+          ay: player.input && player.input.ay ? player.input.ay : 0,
+          keyboard: !!(player.input && player.input.keyboard),
+          mouse: player.input && player.input.mouse ? { x: player.input.mouse.x, y: player.input.mouse.y } : null,
+        },
       })),
       mode: room.mode,
       stageId: room.stageId,
@@ -577,6 +575,17 @@ function createRoom(name, dispose) {
     room.events.push({ type: 'shop' });
   }
 
+  function releaseMotion(player) {
+    const at = rules.seatSpawn(player.slot);
+    player.x = at.x;
+    player.y = at.y;
+    player.vx = 0;
+    player.vy = 0;
+    player.input = { ax: 0, ay: 0, mouse: null, keyboard: false };
+    player.dashLeft = 0;
+    player.dashCd = 0;
+  }
+
   function startNextRound() {
     if (room.mode === 'campaign') {
       const stage = rules.stageById(room.stageId);
@@ -599,8 +608,7 @@ function createRoom(name, dispose) {
     for (const player of room.players.values()) {
       player.ready = false;
       player.rec = [];
-      player.dashLeft = 0;
-      player.dashCd = 0;
+      releaseMotion(player);
       if (player.mode === 'play') {
         syncVitals(player, true);
         markCheckpoint(player);
@@ -693,12 +701,8 @@ function createRoom(name, dispose) {
     for (const player of room.players.values()) {
       player.mode = 'play';
       player.score = 0;
-      player.x = rules.W / 2;
-      player.y = rules.H / 2;
-      player.vx = 0;
-      player.vy = 0;
+      releaseMotion(player);
       player.rec = [];
-      player.input = { ax: 0, ay: 0, mouse: null, keyboard: false };
       player.stageDamage = 0;
       if (room.mode === 'campaign') {
         player.profile = loadProfile(player.name);
@@ -747,7 +751,7 @@ function createRoom(name, dispose) {
         return;
       }
       const id = 'p' + (++room.nextId);
-      const at = seatSpawn(slot);
+      const at = rules.seatSpawn(slot);
       const player = {
         id,
         slot,
@@ -773,6 +777,7 @@ function createRoom(name, dispose) {
     input(socket, msg) {
       const player = room.bySocket.get(socket);
       if (!player || (player.mode !== 'play' && player.mode !== 'lobby')) return;
+      if (room.state === 'play' && Number.isFinite(+msg.round) && (+msg.round | 0) !== room.round) return;
       let mouse = null;
       if (msg && msg.mouse && Number.isFinite(+msg.mouse.x) && Number.isFinite(+msg.mouse.y)) {
         mouse = {
