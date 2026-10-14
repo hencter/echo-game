@@ -72,6 +72,7 @@ async function main() {
     await testShopCountdown(app, port);
     await testShopHoldsPosition(app, port);
     await testDeathCause(app, port);
+    await testDeathList(app, port);
     await testSeats(app, port);
     console.log('net rules ok');
   } finally {
@@ -611,9 +612,24 @@ async function testDeathCause(app, port) {
   assert(cross && cross.ghost_owner_id === a.last.you && cross.ghost_owner_id !== cross.victim_id, 'the mover dies to the other echo');
   assert(cross.victim_name === '乙', 'the death event names the victim');
   assert(rules.echoDeathLine(cross.victim_id, cross.ghost_owner_id, '甲', cross.victim_name) === '乙撞上了甲的回声', 'other echo uses the owner name');
+  const earlier = own.tick <= cross.tick ? cross : own;
+  const later = own.tick <= cross.tick ? own : cross;
+  const listed = rules.recordRoundDeath(rules.recordRoundDeath([], earlier, '甲'), later, '甲');
+  assert(listed.length === 2 && listed[0].tick <= listed[1].tick, 'both deaths stay, sorted by tick');
+  assert(listed.some((row) => row.line === '甲撞上了自己的回声') && listed.some((row) => row.line === '乙撞上了甲的回声'), 'each victim keeps a line');
   a.ws.close();
   b.ws.close();
   await flush();
+}
+
+async function testDeathList() {
+  const rules = require('./shared');
+  let rows = rules.recordRoundDeath([], { victim_id: 'p2', victim_name: '乙', ghost_owner_id: 'p2', tick: 110 }, '乙');
+  rows = rules.recordRoundDeath(rows, { victim_id: 'p1', victim_name: '甲', ghost_owner_id: 'p1', tick: 80 }, '甲');
+  assert(rows.map((row) => row.line).join('\n') === '甲撞上了自己的回声\n乙撞上了自己的回声', 'an earlier death stays ahead of a later one');
+  rows = rules.recordRoundDeath(rows, { victim_id: 'p3', victim_name: '丙', ghost_owner_id: 'p1', tick: 80 }, '甲');
+  assert(rows.map((row) => row.line).join('\n') === '甲撞上了自己的回声\n丙撞上了甲的回声\n乙撞上了自己的回声', 'the same tick keeps arrival order');
+  assert(rows.length === 3, 'every death event stays on the list');
 }
 
 async function testSeats(app, port) {
