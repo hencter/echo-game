@@ -1,0 +1,14 @@
+{
+  "name": "echo-game",
+  "private": true,
+  "scripts": {
+    "start": "node server.js",
+    "test": "node test-net.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "puppeteer-core": "^25.13.0"
+  }
+}
