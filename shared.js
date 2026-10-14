@@ -104,6 +104,7 @@
     no_card: '背包里没有重置卡',
     locked: '还没解锁这一关',
     quest: '这张任务现在不能交',
+    role: '没有这个角色',
     bag_full: '背包满了',
     max_tier: '已经是前沿模型',
     not_owned: '还没有这件',
@@ -1119,6 +1120,21 @@
     });
   }
 
+  const CAST = [
+    { id: 'echo', name: '回声', blurb: '原来的圆身体', color: '#7ad7ff', sheet: '', slots: ['head', 'body', 'accessory'] },
+    { id: 'whale', name: '巨鲸', blurb: '一头抹香鲸', color: '#8fd0e8', sheet: 'assets/sperm_whale_sheet_1x.png', slots: ['head', 'body', 'accessory'] },
+  ];
+  const SPRITE = { frame: 48, cols: 6, rows: 4, idle: 2, walk: 4, footX: 24, footY: 46, dirs: ['down', 'left', 'right', 'up'] };
+
+  function roleById(id) {
+    return CAST.filter(function (role) { return role.id === id; })[0] || null;
+  }
+
+  function slotsOf(id) {
+    const role = roleById(id);
+    return role && role.slots ? role.slots.slice() : SLOTS.slice();
+  }
+
   function wornV2(gear) {
     const slots = ['head', 'body', 'accessory'];
     for (let i = 0; i < slots.length; i++) {
@@ -1218,5 +1234,9 @@
     turnInQuest: turnInQuest,
     questBoard: questBoard,
     wornV2: wornV2,
+    CAST: CAST,
+    SPRITE: SPRITE,
+    roleById: roleById,
+    slotsOf: slotsOf,
   };
 });

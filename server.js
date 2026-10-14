@@ -261,6 +261,7 @@ function createRoom(name, dispose) {
         warnAt: player.warnAt,
         ready: !!player.ready,
         gear: player.gear ? rules.publicGear(player.gear) : [],
+        role: player.role || 'echo',
         level: player.profile ? player.profile.level : 1,
         title: player.profile ? (player.profile.title || '') : '',
       })),
@@ -280,6 +281,7 @@ function createRoom(name, dispose) {
         name: ghost.name,
         color: ghost.color,
         pts: ghost.pts,
+        role: ghost.role || 'echo',
         eaten: Object.keys(ghost.eaten || {}).map(Number).slice(0, 80),
       })),
       trails: [...room.players.values()].filter((player) => player.mode === 'play' && player.rec.length).map((player) => ({
@@ -510,6 +512,7 @@ function createRoom(name, dispose) {
           ownerId: player.id,
           name: player.name,
           color: player.color,
+          role: player.role || 'echo',
           pts: player.rec.map((point) => ({ x: point.x, y: point.y })),
         });
       }
@@ -705,6 +708,7 @@ function createRoom(name, dispose) {
         id,
         name: cleanName(msg && msg.name) || NAMES[index % NAMES.length],
         color: COLORS[index % COLORS.length],
+        role: rules.roleById(msg && msg.role) ? String(msg.role) : 'echo',
         socket,
         x: rules.W / 2 + ((index % 2 === 0 ? -1 : 1) * Math.ceil(index / 2) * 48),
         y: rules.H / 2,
@@ -738,6 +742,15 @@ function createRoom(name, dispose) {
         keyboard: !!(msg && msg.keyboard),
       };
       if (msg && msg.dash) startDash(player);
+    },
+    role(socket, id) {
+      const player = room.bySocket.get(socket);
+      if (!player) return;
+      if (!rules.roleById(id)) {
+        deny(player, 'role');
+        return;
+      }
+      player.role = id;
     },
     dash(socket) {
       const player = room.bySocket.get(socket);
@@ -926,6 +939,18 @@ function createApp(options = {}) {
 
   const server = http.createServer((req, res) => {
     const url = new URL(req.url, 'http://127.0.0.1');
+    const asset = /^\/assets\/([a-z0-9_-]+\.png)$/.exec(url.pathname);
+    if (asset) {
+      const filePath = path.join(__dirname, 'assets', asset[1]);
+      if (!fs.existsSync(filePath)) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+        res.end('not found');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
+      res.end(fs.readFileSync(filePath));
+      return;
+    }
     const file = FILES.get(url.pathname);
     if (!file) {
       res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
@@ -947,6 +972,7 @@ function createApp(options = {}) {
       try { msg = JSON.parse(data.toString()); } catch (e) { return; }
       if (!msg || typeof msg.type !== 'string') return;
       if (msg.type === 'hello') room.hello(socket, msg);
+      else if (msg.type === 'role') room.role(socket, msg.id);
       else if (msg.type === 'input') room.input(socket, msg);
       else if (msg.type === 'start') room.requestStart(socket);
       else if (msg.type === 'campaign') room.campaign(socket, msg.stage);
