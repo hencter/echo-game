@@ -108,9 +108,14 @@ async function testSolo(browser, port) {
   const grace = await page.evaluate(() => window.__echo());
   assert(grace.grace > 0 && grace.t < 60, 'solo grace uses the 60-step rule');
   if (mid.state === 'shop') {
-    assert(Math.abs(grace.x - mid.x) < 2 && Math.abs(grace.y - mid.y) < 2, 'round 2 starts where the shop opened');
+    assert(Math.abs(grace.x - grace.W / 2) < 2 && Math.abs(grace.y - grace.H / 2) < 2, 'round 2 starts at the center spawn');
   }
   assert(grace.flicker === (Math.floor(grace.t / 2) % 2 === 0 ? 0.5 : 0.15), 'solo flicker follows the step');
+  await until(page, () => {
+    const echo = window.__echo();
+    const ghost = (echo.ghostPos || []).find((g) => g);
+    return echo.round === 2 && echo.footDash && ghost && Math.hypot(ghost.x - echo.x, ghost.y - echo.y) > 24;
+  }, 'echo head leaves the spawn', 4000);
   const ring = await page.evaluate(() => {
     const echo = window.__echo();
     const ghost = (echo.ghostPos || []).find((g) => g);
@@ -438,8 +443,25 @@ async function testPair(leftBrowser, rightBrowser, port, app) {
   }
   await until(left.page, () => {
     const e = window.__echo();
-    return e.round === 2 && e.footDash && e.grace > 0 && e.ghosts >= 2;
+    return e.round === 2 && e.state === 'play' && e.footDash && e.grace > 0 && e.ghosts >= 2;
   }, 'grace a', 4000);
+  await until(right.page, () => window.__echo().round === 2 && window.__echo().state === 'play', 'round 2 b', 2000);
+  const spawned = await left.page.evaluate(() => window.__echoNet().players.map((p) => ({
+    name: p.name, slot: p.slot, x: p.x, y: p.y, vx: p.vx, vy: p.vy,
+  })));
+  spawned.forEach((p) => {
+    const x = 480 + ((p.slot % 2 === 0 ? -1 : 1) * Math.ceil(p.slot / 2) * 48);
+    assert(Math.abs(p.x - x) < 2 && Math.abs(p.y - 270) < 2, 'round 2 spawn ' + p.name + ' saw ' + p.x + ',' + p.y);
+    assert(Math.abs(p.vx) < 0.5 && Math.abs(p.vy) < 0.5, 'round 2 still ' + p.name + ' saw ' + p.vx + ',' + p.vy);
+  });
+  const localSpawn = await Promise.all([
+    left.page.evaluate(() => ({ x: window.__echo().x, y: window.__echo().y })),
+    right.page.evaluate(() => ({ x: window.__echo().x, y: window.__echo().y })),
+  ]);
+  assert(Math.abs(localSpawn[0].x - spawned.find((p) => p.name === '甲').x) < 2, '甲 draws the server spawn');
+  assert(Math.abs(localSpawn[1].x - spawned.find((p) => p.name === '乙').x) < 2, '乙 draws the server spawn');
+  await left.page.screenshot({ path: path.join(OUT, 'round2-start-a.png') });
+  await right.page.screenshot({ path: path.join(OUT, 'round2-start-b.png') });
   await until(right.page, () => window.__echo().round === 2 && window.__echo().footDash, 'grace b', 2000);
   const graceA = await left.page.evaluate(() => window.__echo());
   const graceB = await right.page.evaluate(() => window.__echo());

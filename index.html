@@ -230,12 +230,27 @@ function spawnStar() {
   }
 }
 
+function clearHeldInput() {
+  Object.keys(keys).forEach((key) => { keys[key] = 0; });
+  mouse = null;
+  vx = 0;
+  vy = 0;
+  dashLeft = 0;
+  dashCd = 0;
+}
+
+function placeAtSeat(slot) {
+  const at = Rules.seatSpawn(slot || 0, LW, LH);
+  p = { x: at.x, y: at.y };
+  vx = 0;
+  vy = 0;
+}
+
 function reset() {
   chooseArena();
   layout();
-  p = {x: LW / 2, y: LH / 2};
-  vx = 0;
-  vy = 0;
+  clearHeldInput();
+  placeAtSeat(0);
   ghosts = [];
   rec = [];
   t = 0;
@@ -396,6 +411,8 @@ function endShop() {
   stars = [];
   state = 'play';
   banner = 70;
+  clearHeldInput();
+  placeAtSeat(0);
   const stats = Rules.statsOf(gear);
   if (campaignOn) {
     monsters = Rules.spawnWave(Rules.stageById(stageId), round, soloSeed, monsters);
@@ -774,9 +791,8 @@ function startCampaign(id) {
   gear.level = profile.level || 1;
   chooseArena();
   layout();
-  p = { x: LW / 2, y: LH / 2 };
-  vx = 0;
-  vy = 0;
+  clearHeldInput();
+  placeAtSeat(0);
   ghosts = [];
   echoHoles = [];
   rec = [];
@@ -2068,7 +2084,7 @@ NET.readInput = function () {
   const ax = (keys.d || keys.arrowright ? 1 : 0) - (keys.a || keys.arrowleft ? 1 : 0);
   const ay = (keys.s || keys.arrowdown ? 1 : 0) - (keys.w || keys.arrowup ? 1 : 0);
   const keyboard = !!(keys.d || keys.a || keys.arrowleft || keys.arrowright || keys.w || keys.s || keys.arrowup || keys.arrowdown);
-  return { type: 'input', ax, ay, mouse: mouse ? { x: mouse.x, y: mouse.y } : null, keyboard };
+  return { type: 'input', ax, ay, mouse: mouse ? { x: mouse.x, y: mouse.y } : null, keyboard, round };
 };
 
 NET.send = function (msg) {
@@ -2161,9 +2177,14 @@ NET.applyEvents = function (events) {
 };
 
 NET.applySnap = function (msg) {
-  if (msg.epoch !== this.epoch) {
+  const nextMatch = msg.epoch !== this.epoch;
+  const nextRound = (msg.events || []).some((ev) => ev.type === 'round');
+  if (nextMatch) {
     this.epoch = msg.epoch;
     this.clearRoundDeaths();
+    ghosts = [];
+    rec = [];
+    echoHoles = [];
     const arrived = (msg.players || []).find(pl => pl.id === msg.you);
     if (arrived && p) {
       p.x = arrived.x;
@@ -2183,6 +2204,12 @@ NET.applySnap = function (msg) {
   if (msg.events) this.applyEvents(msg.events);
   this.lockArena();
   this.beforeDraw();
+  if (nextMatch || nextRound) {
+    clearHeldInput();
+    const mine = this.myPlayer();
+    if (mine && mine.mode !== 'spectate') placeAtSeat(mine.slot);
+    this.send({ type: 'input', ax: 0, ay: 0, mouse: null, keyboard: false, round: msg.round || round });
+  }
   this.updateChrome();
 };
 

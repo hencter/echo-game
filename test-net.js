@@ -71,6 +71,7 @@ async function main() {
     await testRoles(app, port);
     await testShopCountdown(app, port);
     await testShopHoldsPosition(app, port);
+    await testRoundSpawn(app, port);
     await testDeathCause(app, port);
     await testDeathList(app, port);
     await testSeats(app, port);
@@ -92,8 +93,8 @@ async function testMoveAndStars(app, port) {
   assert(a.last.stars.length === 2, 'round 1 has two stars');
   assert(JSON.stringify(a.last.stars) === JSON.stringify(b.last.stars), 'stars match');
   for (const star of a.last.stars) {
-    const d = Math.hypot(star.x - 480, star.y - 270);
-    assert(d > 60 && d < 210, 'opening stars stay nearby, saw ' + d);
+    const near = Math.min(...a.last.players.map((player) => Math.hypot(star.x - player.x, star.y - player.y)));
+    assert(near > 60 && near < 210, 'opening stars stay nearby, saw ' + near);
   }
   send(a, { type: 'input', ax: 1, ay: 0, mouse: null, keyboard: true });
   send(b, { type: 'input', ax: -1, ay: 0, mouse: null, keyboard: true });
@@ -538,6 +539,7 @@ async function testShopCountdown(app, port) {
 }
 
 async function testShopHoldsPosition(app, port) {
+  const rules = require('./shared');
   const a = await openClient(port, 'shophold', '甲');
   await waitFor(a, (snap) => snap.players.length === 1 && snap.state === 'lobby', 'hold lobby');
   send(a, { type: 'start' });
@@ -559,12 +561,95 @@ async function testShopHoldsPosition(app, port) {
   for (let i = 0; i < left; i++) app.tickAll();
   await flush();
   assert(a.last.state === 'play' && a.last.round === 2 && a.last.t === 0, 'the timer still opens the next round');
-  assert(Math.abs(me(a.last).x - opened.x) < 0.01 && Math.abs(me(a.last).y - opened.y) < 0.01, 'round 2 starts where the shop opened');
+  const spawn = rules.seatSpawn(me(a.last).slot);
+  assert(Math.abs(me(a.last).x - spawn.x) < 0.01 && Math.abs(me(a.last).y - spawn.y) < 0.01, 'round 2 starts at the seat spawn');
+  assert(me(a.last).vx === 0 && me(a.last).vy === 0, 'round 2 starts with no velocity');
   assert(a.last.grace === true, 'the echoed round still starts inside grace');
   for (let i = 0; i < 25; i++) app.tickAll();
   await flush();
-  assert(me(a.last).x < opened.x - 15, 'movement works again after the shop, saw ' + me(a.last).x);
+  assert(Math.abs(me(a.last).x - spawn.x) < 0.01 && Math.abs(me(a.last).y - spawn.y) < 0.01, 'held input does not carry into the round');
+  send(a, { type: 'input', ax: 1, ay: 0, mouse: null, keyboard: true });
+  await flush();
+  for (let i = 0; i < 25; i++) app.tickAll();
+  await flush();
+  assert(me(a.last).x > spawn.x + 15, 'movement works again after a fresh input, saw ' + me(a.last).x);
   a.ws.close();
+  await flush();
+}
+
+function inputIdle(player) {
+  const input = player.input || {};
+  return !input.ax && !input.ay && !input.keyboard && !input.mouse;
+}
+
+async function testRoundSpawn(app, port) {
+  const rules = require('./shared');
+  const a = await openClient(port, 'spawn', '甲');
+  const b = await openClient(port, 'spawn', '乙');
+  await waitFor(b, (snap) => snap.players.length === 2, 'spawn lobby');
+  const slotA = me(a.last).slot;
+  const slotB = other(a.last).slot;
+  const startA = rules.seatSpawn(slotA);
+  const startB = rules.seatSpawn(slotB);
+  send(a, { type: 'start' });
+  await waitFor(a, (snap) => snap.state === 'play' && snap.round === 1 && snap.t === 0, 'spawn match');
+  await waitFor(b, (snap) => snap.state === 'play' && snap.round === 1, 'spawn match b');
+  assert(Math.abs(me(a.last).x - startA.x) < 0.01 && Math.abs(me(a.last).y - startA.y) < 0.01, 'a new match parks 甲 on the seat');
+  assert(Math.abs(other(a.last).x - startB.x) < 0.01 && Math.abs(other(a.last).y - startB.y) < 0.01, 'a new match parks 乙 on the seat');
+  assert(a.last.ghosts.length === 0, 'a new match starts with no echoes');
+  send(a, { type: 'input', ax: -1, ay: -1, mouse: null, keyboard: true });
+  send(b, { type: 'input', ax: -1, ay: 1, mouse: { x: 30, y: 500 }, keyboard: true });
+  await flush();
+  for (let i = 0; i < 360; i++) app.tickAll();
+  await waitFor(a, (snap) => snap.state === 'shop', 'spawn shop');
+  await waitFor(b, (snap) => snap.state === 'shop', 'spawn shop b');
+  assert(Math.hypot(me(a.last).x - startA.x, me(a.last).y - startA.y) > 80, '甲 ends the round off spawn, saw ' + me(a.last).x + ',' + me(a.last).y);
+  assert(Math.hypot(me(b.last).x - startB.x, me(b.last).y - startB.y) > 80, '乙 ends the round off spawn, saw ' + me(b.last).x + ',' + me(b.last).y);
+  assert(a.last.ghosts.length === 2 && b.last.ghosts.length === 2, 'the finished round keeps both echoes');
+  await leaveShop(app, [a, b], 2);
+  await waitFor(b, (snap) => snap.round === 2 && snap.state === 'play', '乙 entered round 2');
+  assert(a.last.round === 2 && a.last.t === 0, 'the next round starts at tick 0');
+  assert(a.last.grace === true && a.last.grace_until_tick === rules.GRACE_TICKS, 'the one-second grace is unchanged');
+  assert(me(a.last).slot === slotA && me(b.last).slot === slotB, 'seats stay on the players who joined with them');
+  assert(Math.abs(me(a.last).x - startA.x) < 0.01 && Math.abs(me(a.last).y - startA.y) < 0.01, '甲 starts round 2 at the seat spawn');
+  assert(Math.abs(me(b.last).x - startB.x) < 0.01 && Math.abs(me(b.last).y - startB.y) < 0.01, '乙 starts round 2 at the seat spawn');
+  assert(me(a.last).vx === 0 && me(a.last).vy === 0 && me(b.last).vx === 0 && me(b.last).vy === 0, 'round 2 clears velocity');
+  assert(inputIdle(me(a.last)) && inputIdle(me(b.last)), 'round 2 clears held input');
+  for (let i = 0; i < 20; i++) app.tickAll();
+  await flush();
+  assert(a.last.state === 'play' && a.last.t === 19, 'the held input does not end the round');
+  assert(Math.abs(me(a.last).x - startA.x) < 0.01 && Math.abs(me(a.last).y - startA.y) < 0.01, '甲 does not drift after round 2 starts');
+  assert(Math.abs(me(b.last).x - startB.x) < 0.01 && Math.abs(me(b.last).y - startB.y) < 0.01, '乙 does not drift after round 2 starts');
+  assert(me(a.last).vx === 0 && me(a.last).vy === 0 && me(b.last).vx === 0 && me(b.last).vy === 0, 'velocity stays zero without input');
+  assert(a.last.ghosts.length === 2 && a.last.ghosts.every((ghost) => ghost.pts.length === 360), 'a new round keeps the echoes already recorded');
+  assert(JSON.stringify(a.last.ghosts) === JSON.stringify(b.last.ghosts), 'both clients keep the same echo history');
+  const cornerOf = (snap, id) => {
+    const ghost = snap.ghosts.find((row) => row.ownerId === id);
+    return ghost.pts[ghost.pts.length - 1];
+  };
+  send(a, { type: 'input', ax: 0, ay: 0, mouse: cornerOf(a.last, a.last.you), keyboard: false });
+  send(b, { type: 'input', ax: 0, ay: 0, mouse: cornerOf(b.last, b.last.you), keyboard: false });
+  await flush();
+  for (let i = 0; i < 400 && a.last.state !== 'over'; i++) {
+    app.tickAll();
+    if (i % 20 === 19) await flush();
+  }
+  await flush();
+  assert(a.last.state === 'over', 'both players can still end the match');
+  assert(a.last.ghosts.length > 0, 'echoes are still recorded when the match ends');
+  const epoch = a.last.epoch;
+  send(a, { type: 'start' });
+  await waitFor(a, (snap) => snap.state === 'play' && snap.round === 1 && snap.epoch !== epoch, 'another match');
+  await waitFor(b, (snap) => snap.epoch === a.last.epoch && snap.round === 1 && snap.ghosts.length === 0, 'peer sees the fresh match');
+  assert(a.last.ghosts.length === 0 && (a.last.trails || []).length === 0, 'a new match clears echo history');
+  assert(b.last.ghosts.length === 0, 'the other client also drops the old echoes');
+  assert(Math.abs(me(a.last).x - startA.x) < 0.01 && Math.abs(me(a.last).y - startA.y) < 0.01, 'the new match returns 甲 to the seat');
+  assert(Math.abs(me(b.last).x - startB.x) < 0.01 && Math.abs(me(b.last).y - startB.y) < 0.01, 'the new match returns 乙 to the seat');
+  assert(me(a.last).vx === 0 && me(a.last).vy === 0 && me(b.last).vx === 0 && me(b.last).vy === 0, 'the new match clears velocity');
+  assert(inputIdle(me(a.last)) && inputIdle(me(b.last)), 'the new match clears held input');
+  assert(me(a.last).slot === slotA && me(b.last).slot === slotB, 'a new match keeps the same seats');
+  a.ws.close();
+  b.ws.close();
   await flush();
 }
 
