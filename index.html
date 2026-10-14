@@ -70,6 +70,11 @@ let shopHits = [];
 let gearMsg = '';
 let gearMsgT = 0;
 let soloSeed = 1;
+let starSeq = 1;
+let spentStars = new Set();
+let checkpoint = null;
+let resetHold = false;
+let playHits = [];
 let NET = {
   active: false,
   connecting: false,
@@ -177,7 +182,7 @@ function spawnStar() {
     sx = Math.max(u * 0.05, Math.min(LW - u * 0.05, sx));
     sy = Math.max(u * 0.05, Math.min(LH - u * 0.05, sy));
     if (!starValid(sx, sy)) continue;
-    stars.push({x: sx, y: sy});
+    stars.push({ id: starSeq++, x: sx, y: sy });
     return;
   }
 }
@@ -212,6 +217,9 @@ function reset() {
   gearMsgT = 0;
   spawnStar();
   spawnStar();
+  spentStars = new Set();
+  resetHold = false;
+  takeCheckpoint();
   state = 'play';
   beep(523, 0.08, 'triangle', 0.12);
 }
@@ -230,7 +238,7 @@ function die() {
 function finishRound() {
   ghosts.push(rec);
   rec = [];
-  const stats = Rules.statsOf(gear);
+  const stats = liveStats();
   const gain = stats.reward || 1;
   score += Math.round(Rules.SCORE_ROUND * stats.score * gain);
   gear.t += Math.round(Rules.T_ROUND * gain);
@@ -269,6 +277,9 @@ function endShop() {
   dashCd = 0;
   let guard = 0;
   while (stars.length < starGoal() && guard++ < 4) spawnStar();
+  spentStars = new Set();
+  resetHold = false;
+  takeCheckpoint();
   beep(330, 0.15, 'triangle', 0.16);
   setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
 }
@@ -290,21 +301,71 @@ function facing() {
   return { x: dashX / l, y: dashY / l };
 }
 
-function tryDash() {
+function liveStats() {
+  const stats = Rules.statsOf(gear);
+  const balance = NET.active ? (NET.coins || 0) : gear.t;
+  if (balance <= 0) {
+    stats.core = null;
+    stats.reward = 1;
+    if (stats.warn > Rules.WARN_BASE) stats.warn = Rules.WARN_BASE;
+    stats.dash = null;
+  }
+  return stats;
+}
+
+function takeCheckpoint() {
+  checkpoint = {
+    x: p.x,
+    y: p.y,
+    hp: hp,
+    shield: shield,
+    maxHp: maxHp,
+    stars: stars.map(s => ({ id: s.id, x: s.x, y: s.y })),
+  };
+}
+
+function useReset() {
   if (state !== 'play') return;
-  if (NET.active) {
-    NET.send({ type: 'dash' });
-    const stats = Rules.statsOf(gear);
-    if (!stats.dash || dashCd > 0 || dashLeft > 0) return;
-    const dir = facing();
-    dashX = dir.x;
-    dashY = dir.y;
-    dashLeft = stats.dash.frames;
-    dashCd = stats.dash.cd;
+  if (currentItemCount('reset') <= 0) {
+    noteGear(Rules.REASON.no_card);
     return;
   }
-  const stats = Rules.statsOf(gear);
+  if (NET.active) {
+    NET.send({ type: 'reset' });
+    return;
+  }
+  if (!checkpoint || !p) return;
+  if (!Rules.spendItem(gear, 'reset')) {
+    noteGear(Rules.REASON.no_card);
+    return;
+  }
+  p.x = checkpoint.x;
+  p.y = checkpoint.y;
+  vx = 0;
+  vy = 0;
+  hp = checkpoint.hp;
+  shield = checkpoint.shield;
+  maxHp = checkpoint.maxHp;
+  iframes = 0;
+  dashLeft = 0;
+  dashCd = 0;
+  rec = [];
+  t = 0;
+  resetHold = true;
+  stars = (checkpoint.stars || []).filter(s => !spentStars.has(s.id)).map(s => ({ id: s.id, x: s.x, y: s.y }));
+  noteGear('这一轮重新开始');
+  beep(520, 0.08, 'triangle', 0.1);
+}
+
+function tryDash() {
+  if (state !== 'play') return;
+  const stats = liveStats();
   if (!stats.dash || dashCd > 0 || dashLeft > 0) return;
+  if (NET.active) NET.send({ type: 'dash' });
+  else if (!Rules.payDash(gear)) {
+    noteGear(Rules.REASON.not_enough_T);
+    return;
+  }
   const dir = facing();
   dashX = dir.x;
   dashY = dir.y;
@@ -440,7 +501,8 @@ function step() {
   const got = collectR() * stats.magnet;
   stars = stars.filter(s => {
     if (Math.hypot(s.x - p.x, s.y - p.y) < got) {
-      const gain = stats.reward || 1;
+      spentStars.add(s.id);
+      const gain = liveStats().reward || 1;
       score += Math.round(Rules.SCORE_STAR * round * stats.score * gain);
       gear.t += Math.round(Rules.T_STAR * gain);
       boom(s.x, s.y, '#ffd54a', 14);
@@ -450,8 +512,10 @@ function step() {
     return true;
   });
   let guard = 0;
-  while (stars.length < starGoal() && guard++ < 4) spawnStar();
+  const cap = resetHold ? Math.max(0, starGoal() - spentStars.size) : starGoal();
+  while (stars.length < cap && guard++ < 4) spawnStar();
 
+  Rules.tickDrain(gear, Rules.statsOf(gear), rec.length);
   if (rec.length >= STEPS) finishRound();
 }
 
@@ -462,7 +526,7 @@ function echoHead(g) {
     y: p ? p.y : 0,
     vx: vx,
     vy: vy,
-    core: Rules.statsOf(gear).core,
+    core: liveStats().core,
     w: LW,
     h: LH,
   };
@@ -496,7 +560,7 @@ function warnLead() {
     const mine = NET.myPlayer();
     return mine && mine.warnAt ? mine.warnAt : Rules.WARN_BASE;
   }
-  return Rules.statsOf(gear).warn;
+  return liveStats().warn;
 }
 
 function viewAsItem(v) {
@@ -535,6 +599,18 @@ function currentCoins() {
   return NET.active ? (NET.coins || 0) : gear.t;
 }
 
+function tokenText(n) {
+  return 'token 余额 ' + n;
+}
+
+function currentItemCount(id) {
+  let n = 0;
+  currentBag().forEach(entry => {
+    if (entry && entry.kind === 'card' && entry.id === id) n += entry.count || 0;
+  });
+  return n;
+}
+
 function currentShopLeft() {
   return NET.active ? (NET.shopLeft || 0) : shopLeft;
 }
@@ -548,6 +624,7 @@ function actShop(hit) {
   if (!hit) return;
   if (NET.active) {
     if (hit.act === 'buy') NET.send({ type: 'buy', id: hit.uid });
+    else if (hit.act === 'buyItem') NET.send({ type: 'buyItem', id: hit.id });
     else if (hit.act === 'train') NET.send({ type: 'train', id: hit.uid });
     else if (hit.act === 'equip') NET.send({ type: 'equip', id: hit.uid });
     else if (hit.act === 'unequip') NET.send({ type: 'unequip', slot: hit.slot });
@@ -556,6 +633,7 @@ function actShop(hit) {
   }
   let result = { ok: true, reason: '' };
   if (hit.act === 'buy') result = Rules.buy(gear, hit.uid);
+  else if (hit.act === 'buyItem') result = Rules.buyItem(gear, hit.id);
   else if (hit.act === 'train') result = Rules.train(gear, hit.uid);
   else if (hit.act === 'equip') result = Rules.equip(gear, hit.uid);
   else if (hit.act === 'unequip') result = Rules.unequip(gear, hit.slot);
@@ -796,7 +874,7 @@ function drawShop() {
   x.fillText('轮间推理', panel.x + 16, panel.y + 26);
   x.font = '14px ui-sans-serif,system-ui,sans-serif';
   x.fillStyle = '#fff';
-  x.fillText('T ' + currentCoins() + '   ' + (currentShopLeft() / 60).toFixed(1) + 's', panel.x + 130, panel.y + 26);
+  x.fillText(tokenText(currentCoins()) + '   ' + (currentShopLeft() / 60).toFixed(1) + 's', panel.x + 130, panel.y + 26);
   if (gearMsg) {
     x.fillStyle = '#ff8a80';
     x.textAlign = 'right';
@@ -805,7 +883,7 @@ function drawShop() {
   }
   x.font = '12px ui-sans-serif,system-ui,sans-serif';
   x.fillStyle = 'rgba(255,255,255,.72)';
-  x.fillText('种子生成词条。训练用 T 币和对局样本升一代：v1 → v2 → v3 → 前沿模型。幻觉是负面词条。', panel.x + 16, panel.y + 46);
+  x.fillText('种子生成词条。训练用 token 和对局样本升代。AI 核心和推理会按步消耗 token 余额。', panel.x + 16, panel.y + 46);
   offers.forEach((offer, i) => {
     const y = panel.y + 58 + i * 52;
     x.beginPath();
@@ -823,10 +901,27 @@ function drawShop() {
     x.fillStyle = 'rgba(255,255,255,.78)';
     x.font = '12px ui-sans-serif,system-ui,sans-serif';
     x.fillText((offer.lines || []).slice(0, 3).join(' · '), panel.x + 48, y + 32);
-    hitButton(offer.price + 'T 接入', panel.x + panel.w - 132, y + 8, 108, 28, 'buy', { uid: offer.uid });
+    hitButton(offer.price + ' 接入', panel.x + panel.w - 132, y + 8, 108, 28, 'buy', { uid: offer.uid });
+  });
+  const catalog = Rules.itemCatalog();
+  catalog.forEach((item, i) => {
+    const y = panel.y + 58 + offers.length * 52 + i * 36;
+    x.beginPath();
+    x.fillStyle = item.color;
+    x.arc(panel.x + 28, y + 12, 8, 0, Math.PI * 2);
+    x.fill();
+    x.fillStyle = '#1a1020';
+    x.font = 'bold 9px ui-sans-serif,system-ui,sans-serif';
+    x.textAlign = 'center';
+    x.fillText(item.mark, panel.x + 28, y + 15);
+    x.textAlign = 'left';
+    x.fillStyle = '#fff';
+    x.font = '14px ui-sans-serif,system-ui,sans-serif';
+    x.fillText(item.name + '  ×' + currentItemCount(item.id) + '  ·  ' + item.blurb, panel.x + 48, y + 16);
+    hitButton(item.price + ' 购买', panel.x + panel.w - 132, y, 108, 26, 'buyItem', { id: item.id });
   });
   const slots = wornGear();
-  const slotY = panel.y + 62 + Math.max(offers.length, 1) * 52;
+  const slotY = panel.y + 62 + Math.max(offers.length, 1) * 52 + catalog.length * 36;
   x.font = '13px ui-sans-serif,system-ui,sans-serif';
   x.fillStyle = '#fff';
   x.textAlign = 'left';
@@ -855,14 +950,48 @@ function drawShop() {
     x.fillStyle = item.color;
     x.font = '12px ui-sans-serif,system-ui,sans-serif';
     x.textAlign = 'center';
-    x.fillText(item.mark + ' ' + item.tierLabel, bx + 35, bagY + 18);
-    shopHits.push({ x: bx, y: bagY, w: 70, h: 28, act: 'equip', uid: item.uid });
+    x.fillText(item.kind === 'card' ? item.mark + '×' + item.count : item.mark + ' ' + item.tierLabel, bx + 35, bagY + 18);
+    if (item.kind !== 'card') shopHits.push({ x: bx, y: bagY, w: 70, h: 28, act: 'equip', uid: item.uid });
   }
   hitButton('准备好了', panel.x + panel.w - 140, bagY, 112, 28, 'ready', {});
   x.textAlign = 'left';
   x.fillStyle = 'rgba(255,255,255,.55)';
   x.font = '12px ui-sans-serif,system-ui,sans-serif';
   x.fillText('1–3 接入货架，4–6 训练头 / 身 / 饰品。预判核沿你的速度提前走，回避核绕开你。', panel.x + 16, panel.y + panel.h - 14);
+}
+
+function drawResetButton() {
+  playHits = [];
+  if (state !== 'play') return;
+  const n = currentItemCount('reset');
+  const hx = 16;
+  const hy = LH - 48;
+  const hw = 148;
+  const hh = 26;
+  x.save();
+  x.globalAlpha = n ? 1 : 0.38;
+  x.fillStyle = n ? 'rgba(154,208,255,.16)' : 'rgba(255,255,255,.05)';
+  x.strokeStyle = n ? '#9ad0ff' : 'rgba(255,255,255,.28)';
+  x.lineWidth = 1;
+  x.beginPath();
+  x.rect(hx, hy, hw, hh);
+  x.fill();
+  x.stroke();
+  x.fillStyle = n ? '#fff' : 'rgba(255,255,255,.7)';
+  x.font = '13px ui-sans-serif,system-ui,sans-serif';
+  x.textAlign = 'center';
+  x.fillText('重置  R   ×' + n, hx + hw / 2, hy + 17);
+  x.restore();
+  if (n) playHits.push({ x: hx, y: hy, w: hw, h: hh, act: 'reset' });
+}
+
+function playHitAt(pt) {
+  if (!pt) return null;
+  for (let i = playHits.length - 1; i >= 0; i--) {
+    const h = playHits[i];
+    if (pt.x >= h.x && pt.x <= h.x + h.w && pt.y >= h.y && pt.y <= h.y + h.h) return h;
+  }
+  return null;
 }
 
 function shopHitAt(pt) {
@@ -888,7 +1017,7 @@ function drawOverlay() {
       '碰到任何一个过去的自己就输了',
       '换轮后先离开刚画的线，回声会沿它走来',
       '鼠标或触摸跟随，也可以用 WASD / 方向键',
-      '轮间推理用 T 币接入装备，再用样本训练升代。Shift 冲刺',
+      '轮间推理用 token 余额接入装备，再用样本训练。R 重置',
       '点击、触摸或空格开始',
     ];
     lines.forEach((s, i) => x.fillText(s, LW / 2, LH / 2 - u * 0.04 + i * u * 0.048));
@@ -928,15 +1057,17 @@ function draw() {
   x.restore();
   drawOverlay();
   if (state === 'shop') drawShop();
+  if (state === 'play') drawResetButton();
 
   if (state === 'play' || state === 'shop') {
     const left = Math.max(0, STEPS - roundProgress()) / 60;
     const wornStats = Rules.statsOf(gear);
-    const coreBit = wornStats.core ? (wornStats.core.kind === 'predict' ? '  预判核' : '  回避核') : '';
+    const live = liveStats();
+    const coreBit = live.core ? (live.core.kind === 'predict' ? '  预判核' : '  回避核') : (wornStats.core ? '  推理暂停' : '');
     const noiseBit = wornStats.noise ? '  幻觉' : '';
     const bits = state === 'shop'
-      ? ('推理  T' + currentCoins() + '  ' + (currentShopLeft() / 60).toFixed(1) + 's' + coreBit)
-      : ('第 ' + round + ' 轮  得分 ' + score + '  T' + currentCoins() + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (hp > 0 && maxHp > 1 ? '  HP' + hp : '') + (shield ? '  盾' + shield : '') + coreBit + noiseBit + (protecting() ? '  离开路线' : ''));
+      ? ('推理  ' + tokenText(currentCoins()) + '  ' + (currentShopLeft() / 60).toFixed(1) + 's' + coreBit)
+      : ('第 ' + round + ' 轮  得分 ' + score + '  ' + tokenText(currentCoins()) + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (hp > 0 && maxHp > 1 ? '  HP' + hp : '') + (shield ? '  盾' + shield : '') + coreBit + noiseBit + (protecting() ? '  离开路线' : ''));
     ui.textContent = bits + (gearMsg && state === 'play' ? '  ' + gearMsg : '') + (NET.active ? NET.hudSuffix() : '');
   } else ui.textContent = '';
   const dock = document.getElementById('dock');
@@ -1006,6 +1137,7 @@ addEventListener('keydown', e => {
     const offer = currentOffers()[+k - 1];
     if (offer) actShop({ act: 'buy', uid: offer.uid });
   }
+  if (k === 'r' && state === 'play') useReset();
   if (state === 'shop' && k >= '4' && k <= '6') {
     const slot = Rules.SLOTS[+k - 4];
     const worn = wornGear().filter(g => g.slot === slot)[0];
@@ -1030,6 +1162,11 @@ c.onmousedown = e => {
     if (hit) { actShop(hit); mouse = null; }
     return;
   }
+  if (state === 'play' && playHitAt(mouse)) {
+    useReset();
+    mouse = null;
+    return;
+  }
   if (state !== 'play') reset();
 };
 c.ontouchstart = e => {
@@ -1037,6 +1174,12 @@ c.ontouchstart = e => {
   if (state === 'shop') {
     const hit = shopHitAt(mouse);
     if (hit) { actShop(hit); mouse = null; }
+    e.preventDefault();
+    return;
+  }
+  if (state === 'play' && playHitAt(mouse)) {
+    useReset();
+    mouse = null;
     e.preventDefault();
     return;
   }
@@ -1137,6 +1280,13 @@ NET.applyEvents = function (events) {
       setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
       if (p) boom(p.x, p.y, '#6cf', 24);
       shake = unit() * 0.008;
+    } else if (ev.type === 'reset' && ev.id === this.id && p) {
+      p.x = ev.x;
+      p.y = ev.y;
+      vx = 0;
+      vy = 0;
+      rec = [];
+      noteGear('回到本轮起点');
     } else if (ev.type === 'deny' && ev.id === this.id) {
       noteGear(ev.text || (Rules.REASON[ev.reason] || ''));
     } else if (ev.type === 'block' && ev.id === this.id) {
@@ -1194,7 +1344,10 @@ NET.beforeDraw = function () {
     const next = Rules.emptyGear();
     next.t = s.coins || 0;
     (mine.gear || []).forEach(g => { next.equipped[g.slot] = viewAsItem(g); });
-    (s.bag || []).forEach(g => next.bag.push(viewAsItem(g)));
+    (s.bag || []).forEach(g => {
+      if (g.kind === 'card') next.bag.push({ kind: 'card', id: g.id, count: g.count });
+      else next.bag.push(viewAsItem(g));
+    });
     gear = next;
     hp = mine.hp || 0;
     maxHp = mine.maxHp || 1;

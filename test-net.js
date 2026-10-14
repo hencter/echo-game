@@ -66,6 +66,7 @@ async function main() {
     await testGrace(app, port);
     await testPaths(app, port);
     await testGear(app, port);
+    await testItems(app, port);
     console.log('net rules ok');
   } finally {
     await app.close();
@@ -321,6 +322,60 @@ async function testGear(app, port) {
   assert(me(c.last).mode === 'dead' && me(d.last).mode === 'dead', 'a second overlap after the grace frames is fatal');
   c.ws.close();
   d.ws.close();
+  await flush();
+}
+
+async function testItems(app, port) {
+  const rules = require('./shared');
+  const gear = rules.emptyGear();
+  gear.t = 10;
+  assert(rules.buyItem(gear, 'reset').ok && rules.countItem(gear, 'reset') === 1, 'reset card takes one bag stack');
+  assert(gear.t === 0, 'the card is paid from the same balance');
+  assert(rules.spendItem(gear, 'reset') && rules.countItem(gear, 'reset') === 0, 'one use consumes one card');
+  const core = rules.emptyGear();
+  core.t = 2;
+  core.equipped.body = rules.rollPiece(4, { primary: 'speed', extra: null, core: 'predict', negative: null });
+  const stats = rules.statsOf(core);
+  assert(rules.tickDrain(core, stats, 45) === 1 && core.t === 1, 'a worn core spends one token every 45 steps');
+  assert(rules.poweredStats(core).reward === 1.5, 'the last token still powers inference');
+  assert(rules.tickDrain(core, stats, 90) === 1 && core.t === 0, 'the next interval spends the last token');
+  assert(!rules.poweredStats(core).core && rules.poweredStats(core).reward === 1, 'an empty balance pauses the core');
+  assert(!rules.payDash(core), 'a dash cannot fire without tokens');
+
+  const a = await openClient(port, 'items', '甲');
+  const b = await openClient(port, 'items', '乙');
+  await waitFor(b, (snap) => snap.players.length === 2, 'items lobby');
+  send(a, { type: 'start' });
+  await waitFor(a, (snap) => snap.state === 'play', 'items start');
+  app.debugGrantItem('items', '甲', 'reset', 1);
+  app.tickAll();
+  await waitFor(a, (snap) => (snap.bag || []).some((item) => item.kind === 'card' && item.id === 'reset' && item.count === 1), 'card synced');
+  send(a, { type: 'input', ax: 1, ay: 0, mouse: null, keyboard: true });
+  send(b, { type: 'input', ax: -1, ay: 0, mouse: null, keyboard: true });
+  await flush();
+  for (let i = 0; i < 30; i++) app.tickAll();
+  await flush();
+  const moved = me(a.last).x;
+  const t0 = a.last.t;
+  const score = me(a.last).score;
+  assert(moved > 520, '甲 walked away from the checkpoint, saw ' + moved);
+  send(a, { type: 'input', ax: 0, ay: 0, mouse: null, keyboard: false });
+  send(a, { type: 'reset' });
+  await flush();
+  app.tickAll();
+  await waitFor(a, (snap) => Math.abs(me(snap).x - rules.W / 2) < 30, 'reset returns 甲 to the round start');
+  assert(me(b.last).x < 440, '乙 stays where 乙 walked');
+  assert(a.last.t === t0 + 1, 'the shared clock is not rewound');
+  assert(me(a.last).score === score, 'score stays');
+  assert(!(a.last.bag || []).some((item) => item.kind === 'card' && item.count > 0), 'the card is consumed');
+  assert(a.last.ghosts.length === b.last.ghosts.length, 'echoes are still shared');
+  send(a, { type: 'reset' });
+  await flush();
+  app.tickAll();
+  await flush();
+  assert((a.last.events || []).some((ev) => ev.reason === 'no_card'), 'a second reset needs another card');
+  a.ws.close();
+  b.ws.close();
   await flush();
 }
 

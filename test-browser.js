@@ -83,6 +83,7 @@ async function testSolo(browser, port) {
     });
     const bought = await page.evaluate(() => window.__echo());
     assert(bought.worn.length >= 1 && bought.worn[0].name && bought.worn[0].tierLabel === 'v1', 'solo shop equips a generated v1 piece');
+    await until(page, () => (document.getElementById('ui').textContent || '').indexOf('token 余额') >= 0, 'token label', 4000);
     await page.evaluate(() => window.__echoShop({ act: 'ready' }));
   }
   await until(page, () => window.__echo().round === 2 && window.__echo().footDash === true, 'solo grace', 4000);
