@@ -961,13 +961,27 @@ function echoFlicker() {
   return Math.floor(t / 2) % 2 === 0 ? 0.5 : 0.15;
 }
 
-function drawFootRing(q, color, dashed) {
+function drawFootRing(q, dashed) {
+  const cx = q.x;
+  const cy = q.y + bodyR() + 4;
+  const radius = 4;
+  x.save();
+  x.setLineDash(dashed ? [2, 2] : []);
   x.save();
   x.beginPath();
-  x.strokeStyle = color;
-  x.lineWidth = 1.5;
-  x.setLineDash(dashed ? [2, 2] : []);
-  x.arc(q.x, q.y + bodyR() + 4, 4, 0, Math.PI * 2);
+  x.rect(cx - 16, cy - 16, 32, 32);
+  x.arc(cx, cy, radius, 0, Math.PI * 2, true);
+  x.clip('evenodd');
+  x.beginPath();
+  x.strokeStyle = '#000';
+  x.lineWidth = 6;
+  x.arc(cx, cy, radius, 0, Math.PI * 2);
+  x.stroke();
+  x.restore();
+  x.beginPath();
+  x.strokeStyle = '#fff';
+  x.lineWidth = 2;
+  x.arc(cx, cy, radius, 0, Math.PI * 2);
   x.stroke();
   x.restore();
 }
@@ -1128,7 +1142,7 @@ function drawWorld() {
       const n = Math.min(t, g.length - 1);
       if (echoHoles[i] && echoHoles[i][n]) return;
       const head = echoHead(g);
-      if (head) drawFootRing(head, ghostColor(i, 1), safe);
+      if (head) drawFootRing(head, safe);
     });
 
     const trailColor = NET.active && NET.color && NET.fade ? NET.fade(NET.color, 0.78) : 'rgba(130,220,255,.78)';
