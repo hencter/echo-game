@@ -20,6 +20,8 @@
 <div id="ui"></div>
 <div id="dock">
   <div id="netmsg"></div>
+  <button id="campaign" type="button">闯关</button>
+  <button id="quests" type="button">任务</button>
   <button id="multi" type="button">多人同场</button>
   <button id="leave" type="button" class="quiet" hidden>退出多人</button>
 </div>
@@ -75,6 +77,22 @@ let spentStars = new Set();
 let checkpoint = null;
 let resetHold = false;
 let playHits = [];
+let campaignOn = false;
+let stageId = 1;
+let stageDamage = 0;
+let monsters = [];
+let shots = [];
+let drops = [];
+let walls = [];
+let echoHoles = [];
+let soloDashHits = {};
+let profile = null;
+let board = '';
+let boardHits = [];
+let questOpen = false;
+let deathCause = '';
+let dashMul = 1;
+let stageLabel = '';
 let NET = {
   active: false,
   connecting: false,
@@ -102,7 +120,11 @@ function collectR() { return unit() * 0.04; }
 function collideDist() {
   return bodyR() * 2 + unit() * 0.00115 * Math.min(ghosts.length, 10);
 }
-function starGoal() { return Math.min(4, 2 + Math.floor((round - 1) / 2)); }
+function todayKey() { return new Date().toISOString().slice(0, 10); }
+function starGoal() {
+  if (!campaignOn) return Math.min(4, 2 + Math.floor((round - 1) / 2));
+  return Rules.starGoal(round, Rules.stageById(stageId));
+}
 
 function chooseArena() {
   const fit = Math.min(innerWidth / CAP_W, innerHeight / CAP_H);
@@ -215,6 +237,16 @@ function reset() {
   shopReady = false;
   gearMsg = '';
   gearMsgT = 0;
+  campaignOn = false;
+  questOpen = false;
+  board = '';
+  deathCause = '';
+  stageLabel = '';
+  monsters = [];
+  shots = [];
+  drops = [];
+  walls = [];
+  echoHoles = [];
   spawnStar();
   spawnStar();
   spentStars = new Set();
@@ -224,7 +256,8 @@ function reset() {
   beep(523, 0.08, 'triangle', 0.12);
 }
 
-function die() {
+function die(cause) {
+  deathCause = cause || '';
   state = 'over';
   shake = unit() * 0.02;
   boom(p.x, p.y, '#f55', 48);
@@ -237,6 +270,7 @@ function die() {
 
 function finishRound() {
   ghosts.push(rec);
+  echoHoles.push({});
   rec = [];
   const stats = liveStats();
   const gain = stats.reward || 1;
@@ -245,22 +279,62 @@ function finishRound() {
   Rules.noteSamples(gear);
   Rules.openStock(gear, soloSeed, round, 'solo');
   stars = [];
+  if (campaignOn) {
+    loadProfile();
+    const up = Rules.addXp(profile, 2);
+    gear.t += up.bonus;
+    noteLevels(up.levels);
+    const stage = Rules.stageById(stageId);
+    const king = monsters.some(mon => mon.kind === 'king' && mon.hp > 0);
+    saveProfile();
+    if (stage && round >= stage.rounds && stage.boss && king) {
+      die('回声王还在');
+      return;
+    }
+  }
   state = 'shop';
   shopLeft = Rules.SHOP_STEPS;
   shopReady = false;
   banner = 70;
-  maxHp = stats.maxHp;
-  hp = maxHp;
-  shield = stats.blocks;
   iframes = 0;
   dashLeft = 0;
+  if (campaignOn) syncCampaignHearts(true);
+  else {
+    maxHp = stats.maxHp;
+    hp = maxHp;
+    shield = stats.blocks;
+  }
   beep(330, 0.15, 'triangle', 0.16);
   setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
   if (p) boom(p.x, p.y, '#6cf', 24);
   shake = unit() * 0.008;
 }
 
+function clearCampaignStage() {
+  const stage = Rules.stageById(stageId);
+  loadProfile();
+  if (stage && profile.unlocked < stage.id + 1) profile.unlocked = Math.min(Rules.STAGES.length, stage.id + 1);
+  const today = todayKey();
+  if (stage) Rules.bumpQuest(profile, 'clear', 1, { stage: stage.id }, today);
+  if (!stageDamage) Rules.bumpQuest(profile, 'flawless', 1, null, today);
+  saveProfile();
+  monsters = [];
+  shots = [];
+  drops = [];
+  state = 'clear';
+  board = '';
+  noteGear(stage ? ('打通了 ' + stage.name) : '过关');
+}
+
 function endShop() {
+  if (campaignOn) {
+    const stage = Rules.stageById(stageId);
+    if (stage && round >= stage.rounds) {
+      clearCampaignStage();
+      beep(523, 0.16, 'triangle', 0.16);
+      return;
+    }
+  }
   shopReady = false;
   round += 1;
   t = 0;
@@ -269,9 +343,15 @@ function endShop() {
   state = 'play';
   banner = 70;
   const stats = Rules.statsOf(gear);
-  maxHp = stats.maxHp;
-  hp = maxHp;
-  shield = stats.blocks;
+  if (campaignOn) {
+    monsters = Rules.spawnWave(Rules.stageById(stageId), round, soloSeed, monsters);
+    shots = [];
+    syncCampaignHearts(true);
+  } else {
+    maxHp = stats.maxHp;
+    hp = maxHp;
+    shield = stats.blocks;
+  }
   iframes = 0;
   dashLeft = 0;
   dashCd = 0;
@@ -280,6 +360,7 @@ function endShop() {
   spentStars = new Set();
   resetHold = false;
   takeCheckpoint();
+  if (campaignOn) saveProfile();
   beep(330, 0.15, 'triangle', 0.16);
   setTimeout(() => beep(495, 0.2, 'triangle', 0.16), 120);
 }
@@ -359,25 +440,32 @@ function useReset() {
 
 function tryDash() {
   if (state !== 'play') return;
+  if (NET.active) {
+    NET.send({ type: 'dash' });
+    return;
+  }
   const stats = liveStats();
-  if (!stats.dash || dashCd > 0 || dashLeft > 0) return;
-  if (NET.active) NET.send({ type: 'dash' });
-  else if (!Rules.payDash(gear)) {
+  const level = campaignOn && profile ? (profile.level || 1) : 1;
+  const dash = Rules.attackDash(stats, level, campaignOn);
+  if (!dash || dashCd > 0 || dashLeft > 0) return;
+  if (dash.paid && !Rules.payDash(gear)) {
     noteGear(Rules.REASON.not_enough_T);
     return;
   }
   const dir = facing();
   dashX = dir.x;
   dashY = dir.y;
-  dashLeft = stats.dash.frames;
-  dashCd = stats.dash.cd;
+  dashLeft = dash.frames;
+  dashCd = dash.cd;
+  dashMul = dash.speed;
+  soloDashHits = {};
 }
 
 function movePlayer() {
   const dt = 1 / 60;
   if (dashLeft > 0 && p) {
     const stats = Rules.statsOf(gear);
-    const mul = stats.dash ? stats.dash.speed : 1;
+    const mul = dashMul || (stats.dash ? stats.dash.speed : 1);
     const burst = unit() * 0.44 * mul;
     const len = Math.hypot(dashX, dashY) || 1;
     vx = dashX / len * burst;
@@ -476,7 +564,9 @@ function step() {
   if (banner > 0) banner--;
   if (state !== 'play') return;
 
+  const dashing = dashLeft > 0;
   movePlayer();
+  if (campaignOn && p) Rules.pushOut(p, walls, bodyR());
   const stats = Rules.statsOf(gear);
   const nudge = Rules.hallucinationNudge(rec.length + 1, stats.noise, soloSeed);
   if ((nudge.x || nudge.y) && p) {
@@ -486,11 +576,18 @@ function step() {
   }
   rec.push({x: p.x, y: p.y});
   t = rec.length - 1;
+  if (campaignOn) {
+    runCampaign(dashing);
+    if (state !== 'play') return;
+  }
 
   if (iframes > 0) iframes--;
   else if (!protecting()) {
     let hit = false;
-    for (const g of ghosts) {
+    for (let i = 0; i < ghosts.length; i++) {
+      const g = ghosts[i];
+      const idx = Math.min(t, g.length - 1);
+      if (campaignOn && echoHoles[i] && echoHoles[i][idx]) continue;
       const q = echoHead(g);
       if (q && Math.hypot(q.x - p.x, q.y - p.y) < collideDist()) { hit = true; break; }
     }
@@ -505,6 +602,16 @@ function step() {
       const gain = liveStats().reward || 1;
       score += Math.round(Rules.SCORE_STAR * round * stats.score * gain);
       gear.t += Math.round(Rules.T_STAR * gain);
+      if (profile || campaignOn) {
+        loadProfile();
+        Rules.bumpQuest(profile, 'stars', 1, null, todayKey());
+        if (campaignOn) {
+          const up = Rules.addXp(profile, 1);
+          gear.t += up.bonus;
+          noteLevels(up.levels);
+        }
+        saveProfile();
+      }
       boom(s.x, s.y, '#ffd54a', 14);
       beep(600 + Math.random() * 400, 0.1, 'triangle', 0.12);
       return false;
@@ -519,6 +626,176 @@ function step() {
   if (rec.length >= STEPS) finishRound();
 }
 
+function loadProfile() {
+  if (profile) return profile;
+  try {
+    const saved = JSON.parse(localStorage.echoProfile || 'null');
+    if (saved && saved.gear) profile = saved;
+  } catch (e) {}
+  if (!profile) profile = Rules.freshProfile();
+  if (!profile.gear) profile.gear = Rules.emptyGear();
+  profile.gear.level = profile.level || 1;
+  return profile;
+}
+
+function saveProfile() {
+  if (!profile) return;
+  if (campaignOn) {
+    profile.gear = Rules.cloneGear(gear);
+    profile.gear.level = profile.level || 1;
+  } else if (profile.gear) {
+    profile.gear.level = profile.level || 1;
+  }
+  try { localStorage.echoProfile = JSON.stringify(profile); } catch (e) {}
+}
+
+function noteLevels(levels) {
+  if (!levels || !levels.length) return;
+  syncCampaignHearts(false);
+  noteGear('升到 Lv' + levels[levels.length - 1] + (profile && profile.title ? ' ' + profile.title : ''));
+}
+
+function syncCampaignHearts(fill) {
+  if (!campaignOn) return;
+  const stats = Rules.statsOf(gear);
+  const level = profile ? (profile.level || 1) : 1;
+  gear.level = level;
+  const next = Rules.heartsOf(level, stats.bonusHp);
+  const gained = Math.max(0, next - maxHp);
+  maxHp = next;
+  if (fill) {
+    hp = maxHp;
+    shield = stats.blocks;
+  } else if (gained && hp > 0) hp = Math.min(maxHp, hp + gained);
+  else if (hp > maxHp) hp = maxHp;
+}
+
+function progressView() {
+  if (NET.active) {
+    return {
+      level: NET.level || 1,
+      xp: NET.xp || 0,
+      xpNext: NET.xpNext || 0,
+      title: NET.title || '',
+      unlocked: NET.unlocked || 1,
+      quests: NET.quests || [],
+      stageName: NET.stageName || stageLabel || '',
+    };
+  }
+  if (profile || campaignOn || board) loadProfile();
+  if (!profile) {
+    return { level: 1, xp: 0, xpNext: Rules.xpToNext(1), title: '', unlocked: 1, quests: [], stageName: stageLabel || '' };
+  }
+  const stage = campaignOn ? Rules.stageById(stageId) : null;
+  return {
+    level: profile.level || 1,
+    xp: profile.xp || 0,
+    xpNext: Rules.xpToNext(profile.level || 1),
+    title: profile.title || '',
+    unlocked: profile.unlocked || 1,
+    quests: Rules.questBoard(profile, todayKey()),
+    stageName: stage ? stage.name : (stageLabel || ''),
+  };
+}
+
+function startCampaign(id) {
+  const row = Rules.stageById(id);
+  loadProfile();
+  if (!row || row.id > (profile.unlocked || 1)) {
+    noteGear(Rules.REASON.locked);
+    return;
+  }
+  const seedQuery = new URLSearchParams(location.search).get('seed');
+  if (seedQuery != null && seedQuery !== '') soloSeed = (Number(seedQuery) >>> 0);
+  else soloSeed = (Math.random() * 0x100000000) >>> 0;
+  campaignOn = true;
+  stageId = row.id;
+  stageLabel = row.name;
+  stageDamage = 0;
+  questOpen = false;
+  board = '';
+  deathCause = '';
+  gear = Rules.cloneGear(profile.gear);
+  gear.level = profile.level || 1;
+  chooseArena();
+  layout();
+  p = { x: LW / 2, y: LH / 2 };
+  vx = 0;
+  vy = 0;
+  ghosts = [];
+  echoHoles = [];
+  rec = [];
+  t = 0;
+  round = 1;
+  score = 0;
+  stars = [];
+  parts = [];
+  shake = 0;
+  banner = 0;
+  syncCampaignHearts(true);
+  iframes = 0;
+  dashLeft = 0;
+  dashCd = 0;
+  shopLeft = 0;
+  shopReady = false;
+  walls = row.walls || [];
+  monsters = Rules.spawnWave(row, 1, soloSeed);
+  shots = [];
+  drops = [];
+  soloDashHits = {};
+  spawnStar();
+  spawnStar();
+  spentStars = new Set();
+  resetHold = false;
+  takeCheckpoint();
+  state = 'play';
+  noteGear('');
+}
+
+function runCampaign(dashing) {
+  if (!campaignOn) return;
+  const stage = Rules.stageById(stageId);
+  Rules.pushOut(p, walls, bodyR());
+  const wrapped = ghosts.map((pts, i) => ({ pts: pts, eaten: echoHoles[i] || (echoHoles[i] = {}), t: t }));
+  Rules.stepMonsters(monsters, [{ x: p.x, y: p.y, mode: 'play' }], wrapped, stage, round, walls);
+  Rules.eatEchoes(monsters, wrapped);
+  Rules.kingBarrage(monsters, wrapped, [{ x: p.x, y: p.y, mode: 'play' }], shots, rec.length, soloSeed);
+  Rules.stepShots(shots, walls);
+  const body = { id: 'solo', x: p.x, y: p.y, hp: hp, iframes: iframes, r: bodyR(), dashHits: soloDashHits, mode: 'play' };
+  const events = Rules.fightMonsters(body, monsters, shots, dashing);
+  hp = body.hp;
+  iframes = body.iframes;
+  soloDashHits = body.dashHits;
+  events.forEach(event => {
+    if (event.type === 'smack') boom(event.x, event.y, '#fff', 10);
+    if (event.type === 'bite') {
+      stageDamage++;
+      boom(event.x, event.y, '#ff8a80', 12);
+    }
+  });
+  const today = todayKey();
+  const reaped = Rules.reapMonsters(monsters, soloSeed, rec.length);
+  reaped.killed.forEach(mon => {
+    boom(mon.x, mon.y, mon.color || '#fff', 16);
+    Rules.bumpQuest(profile, 'kills', 1, null, today);
+    if (mon.kind === 'king') Rules.bumpQuest(profile, 'king-v2', 1, { v2: Rules.wornV2(gear) }, today);
+  });
+  drops = drops.concat(reaped.drops);
+  drops = drops.filter(drop => {
+    if (Math.hypot(drop.x - p.x, drop.y - p.y) >= 24) return true;
+    const levels = Rules.takeDrop(gear, profile, drop);
+    gear.level = profile.level || 1;
+    noteLevels(levels);
+    beep(720, 0.08, 'triangle', 0.1);
+    return false;
+  });
+  if (hp <= 0) {
+    saveProfile();
+    const bite = events.filter(event => event.type === 'bite').pop();
+    die(bite ? ('被' + bite.by + '打倒了') : '被怪物打倒了');
+  }
+}
+
 function echoHead(g) {
   if (!g || !g.length) return null;
   const wearer = {
@@ -526,14 +803,14 @@ function echoHead(g) {
     y: p ? p.y : 0,
     vx: vx,
     vy: vy,
-    core: liveStats().core,
+    core: Rules.mergeCore(liveStats().core, campaignOn ? Rules.stageEcho(Rules.stageById(stageId), round) : null),
     w: LW,
     h: LH,
   };
   return Rules.echoAt(g, Math.max(0, t), wearer);
 }
 
-function strokeRange(ctx, pts, a, b, style, width) {
+function strokeRange(ctx, pts, a, b, style, width, holes) {
   if (!pts || b - a < 1) return;
   ctx.beginPath();
   ctx.strokeStyle = style;
@@ -543,6 +820,7 @@ function strokeRange(ctx, pts, a, b, style, width) {
   let moved = false;
   for (let i = a; i <= b && i < pts.length; i++) {
     if (i < 0) continue;
+    if (holes && holes[i]) { moved = false; continue; }
     const q = pts[i];
     if (!moved) { ctx.moveTo(q.x, q.y); moved = true; }
     else ctx.lineTo(q.x, q.y);
@@ -641,10 +919,15 @@ function actShop(hit) {
   if (!result.ok) noteGear(Rules.REASON[result.reason] || result.reason);
   else {
     noteGear('');
-    const stats = Rules.statsOf(gear);
-    maxHp = stats.maxHp;
-    hp = maxHp;
-    shield = stats.blocks;
+    if (campaignOn) {
+      syncCampaignHearts(true);
+      saveProfile();
+    } else {
+      const stats = Rules.statsOf(gear);
+      maxHp = stats.maxHp;
+      hp = maxHp;
+      shield = stats.blocks;
+    }
   }
 }
 
@@ -722,6 +1005,13 @@ function drawWorld() {
   x.strokeStyle = 'rgba(255,255,255,.1)';
   x.lineWidth = 2;
   x.strokeRect(1, 1, LW - 2, LH - 2);
+  walls.forEach(wall => {
+    x.fillStyle = 'rgba(154,176,255,.16)';
+    x.strokeStyle = 'rgba(255,255,255,.38)';
+    x.lineWidth = 1;
+    x.fillRect(wall.x, wall.y, wall.w, wall.h);
+    x.strokeRect(wall.x, wall.y, wall.w, wall.h);
+  });
 
   if (state !== 'menu') {
     const safe = protecting();
@@ -736,11 +1026,13 @@ function drawWorld() {
     ghosts.forEach((g, i) => {
       const n = Math.min(t, g.length - 1);
       const age = ghosts.length - 1 - i;
-      const head = echoHead(g);
+      const holes = echoHoles[i];
+      const eatenHead = holes && holes[n];
+      const head = eatenHead ? null : echoHead(g);
       const q = head || g[Math.max(0, n)];
-      strokeRange(ex, g, 0, g.length - 1, ghostColor(i, Math.max(0.28, 0.58 - age * 0.05)), 3.2);
-      strokeRange(ex, g, n - 28, n, ghostColor(i, 0.9), 3);
-      strokeRange(ex, g, n, Math.min(g.length - 1, n + 32), ghostColor(i, 1), 3.6);
+      strokeRange(ex, g, 0, g.length - 1, ghostColor(i, Math.max(0.28, 0.58 - age * 0.05)), 3.2, holes);
+      strokeRange(ex, g, n - 28, n, ghostColor(i, 0.9), 3, holes);
+      strokeRange(ex, g, n, Math.min(g.length - 1, n + 32), ghostColor(i, 1), 3.6, holes);
       if (head && (head.x !== head.baseX || head.y !== head.baseY)) {
         ex.strokeStyle = '#ffcc66';
         ex.lineWidth = 2;
@@ -751,6 +1043,7 @@ function drawWorld() {
         ex.stroke();
         ex.setLineDash([]);
       }
+      if (!eatenHead && q) {
       ex.fillStyle = ghostColor(i, 0.95);
       ex.beginPath();
       ex.arc(q.x, q.y, bodyR(), 0, Math.PI * 2);
@@ -760,6 +1053,7 @@ function drawWorld() {
       ex.beginPath();
       ex.arc(q.x, q.y, Math.max(bodyR() + 2, collideDist() - bodyR()), 0, Math.PI * 2);
       ex.stroke();
+      }
     });
     x.save();
     x.setTransform(1, 0, 0, 1, 0, 0);
@@ -767,6 +1061,8 @@ function drawWorld() {
     x.drawImage(echoLayer, 0, 0);
     x.restore();
     ghosts.forEach((g, i) => {
+      const n = Math.min(t, g.length - 1);
+      if (echoHoles[i] && echoHoles[i][n]) return;
       const head = echoHead(g);
       if (head) drawFootRing(head, ghostColor(i, 1), safe);
     });
@@ -794,6 +1090,36 @@ function drawWorld() {
     stars.forEach(s => {
       x.fillStyle = '#ffd54a';
       drawSpark(s.x, s.y, bodyR() * 0.85 + Math.sin(Date.now() / 160) * 1.4);
+    });
+
+    monsters.forEach(mon => {
+      x.fillStyle = mon.color || '#fff';
+      x.beginPath();
+      x.arc(mon.x, mon.y, mon.r || 11, 0, Math.PI * 2);
+      x.fill();
+      x.strokeStyle = 'rgba(0,0,0,.45)';
+      x.lineWidth = 2;
+      x.stroke();
+      x.fillStyle = '#fff';
+      x.font = '12px ui-sans-serif,system-ui,sans-serif';
+      x.textAlign = 'center';
+      x.fillText(mon.name || '', mon.x, mon.y - (mon.r || 11) - 8);
+      const bw = 26;
+      const by = mon.y + (mon.r || 11) + 4;
+      x.fillStyle = 'rgba(0,0,0,.45)';
+      x.fillRect(mon.x - bw / 2, by, bw, 3);
+      x.fillStyle = '#ff8a80';
+      x.fillRect(mon.x - bw / 2, by, bw * Math.max(0, (mon.hp || 0) / (mon.maxHp || 1)), 3);
+    });
+    shots.forEach(shot => {
+      x.fillStyle = '#ffd0ea';
+      x.beginPath();
+      x.arc(shot.x, shot.y, shot.r || 5, 0, Math.PI * 2);
+      x.fill();
+    });
+    drops.forEach(drop => {
+      x.fillStyle = drop.kind === 'gear' ? '#9ad0ff' : '#ffec27';
+      drawSpark(drop.x, drop.y, 8);
     });
 
     if (p && state !== 'menu') {
@@ -941,7 +1267,8 @@ function drawShop() {
   x.fillStyle = '#fff';
   x.font = '13px ui-sans-serif,system-ui,sans-serif';
   x.fillText('背包', panel.x + 16, bagY + 16);
-  for (let i = 0; i < Rules.BAG; i++) {
+  const bagCap = Rules.bagCap(gear);
+  for (let i = 0; i < bagCap; i++) {
     const item = bag[i];
     const bx = panel.x + 62 + i * 78;
     x.strokeStyle = 'rgba(255,255,255,.4)';
@@ -1018,7 +1345,7 @@ function drawOverlay() {
       '换轮后先离开刚画的线，回声会沿它走来',
       '鼠标或触摸跟随，也可以用 WASD / 方向键',
       '轮间推理用 token 余额接入装备，再用样本训练。R 重置',
-      '点击、触摸或空格开始',
+      '点「闯关」打怪升级。空格仍是原来的单机无尽',
     ];
     lines.forEach((s, i) => x.fillText(s, LW / 2, LH / 2 - u * 0.04 + i * u * 0.048));
   }
@@ -1042,8 +1369,140 @@ function drawOverlay() {
     x.font = Math.round(u * 0.034) + 'px ui-sans-serif,system-ui,sans-serif';
     x.fillText(overDetail(), LW / 2, by + bh * 0.62);
     x.fillStyle = 'rgba(255,255,255,.8)';
-    x.fillText('点击 / 空格 再来', LW / 2, by + bh * 0.84);
+    x.fillText(campaignOn ? '点击 / 空格 重试这一关' : '点击 / 空格 再来', LW / 2, by + bh * 0.84);
   }
+  if (state === 'clear') {
+    x.fillStyle = 'rgba(6,8,18,.58)';
+    x.fillRect(0, 0, LW, LH);
+    const bw = Math.min(LW - 48, u * 1.62);
+    const bh = u * 0.36;
+    const bx = (LW - bw) / 2;
+    const by = (LH - bh) / 2;
+    x.fillStyle = 'rgba(12,16,32,.92)';
+    x.beginPath();
+    x.roundRect(bx, by, bw, bh, 18);
+    x.fill();
+    x.strokeStyle = 'rgba(255,255,255,.18)';
+    x.lineWidth = 2;
+    x.stroke();
+    x.fillStyle = '#fff';
+    x.font = 'bold ' + Math.round(u * 0.06) + 'px ui-sans-serif,system-ui,sans-serif';
+    x.fillText(gearMsg || '这一关打通了', LW / 2, by + bh * 0.4);
+    x.font = Math.round(u * 0.03) + 'px ui-sans-serif,system-ui,sans-serif';
+    x.fillStyle = 'rgba(255,255,255,.86)';
+    x.fillText('下一关已解锁。点「闯关」继续，空格打开选关', LW / 2, by + bh * 0.72);
+  }
+}
+
+function drawBoard() {
+  boardHits = [];
+  if (!board || state === 'shop') return;
+  const viewProgress = progressView();
+  const panel = { x: 150, y: 48, w: LW - 300, h: LH - 110 };
+  x.fillStyle = 'rgba(8,10,22,.94)';
+  x.fillRect(panel.x, panel.y, panel.w, panel.h);
+  x.strokeStyle = 'rgba(255,255,255,.4)';
+  x.lineWidth = 1;
+  x.strokeRect(panel.x, panel.y, panel.w, panel.h);
+  x.textAlign = 'left';
+  x.font = 'bold 18px ui-sans-serif,system-ui,sans-serif';
+  x.fillStyle = '#fff';
+  x.fillText(board === 'stages' ? '选关' : '任务', panel.x + 16, panel.y + 28);
+  x.font = '13px ui-sans-serif,system-ui,sans-serif';
+  x.fillStyle = 'rgba(255,255,255,.78)';
+  const prog = 'Lv' + viewProgress.level + (viewProgress.title ? ' ' + viewProgress.title : '') + '  XP ' + viewProgress.xp + '/' + (viewProgress.xpNext || '满');
+  x.fillText(prog, panel.x + 80, panel.y + 28);
+  if (board === 'stages') {
+    Rules.STAGES.forEach((stage, i) => {
+      const y = panel.y + 48 + i * 64;
+      const locked = stage.id > viewProgress.unlocked;
+      x.fillStyle = locked ? 'rgba(255,255,255,.35)' : '#fff';
+      x.font = '15px ui-sans-serif,system-ui,sans-serif';
+      x.fillText(stage.name + '  ·  ' + stage.rounds + ' 轮' + (stage.boss ? '  ·  回声王' : '') + (locked ? '  ·  未解锁' : ''), panel.x + 16, y + 16);
+      x.font = '12px ui-sans-serif,system-ui,sans-serif';
+      x.fillStyle = 'rgba(255,255,255,.62)';
+      const kinds = [];
+      (stage.waves || []).forEach(wave => wave.forEach(group => {
+        const spec = Rules.MONSTERS[group.kind];
+        if (spec && kinds.indexOf(spec.name) < 0) kinds.push(spec.name);
+      }));
+      const echo = stage.echo ? (stage.echo === 'predict' ? '预判 ' + stage.echoLead : '回避 ' + stage.echoLead) : '回声不加速';
+      x.fillText(kinds.join('、') + '  ·  ' + echo + (stage.slowRounds ? '  ·  前两轮放慢' : ''), panel.x + 16, y + 36);
+      if (!locked) {
+        x.fillStyle = 'rgba(255,255,255,.06)';
+        x.strokeStyle = 'rgba(255,255,255,.5)';
+        x.strokeRect(panel.x + panel.w - 92, y + 8, 72, 26);
+        x.fillStyle = '#fff';
+        x.font = '13px ui-sans-serif,system-ui,sans-serif';
+        x.textAlign = 'center';
+        x.fillText('进入', panel.x + panel.w - 56, y + 26);
+        x.textAlign = 'left';
+        boardHits.push({ x: panel.x + panel.w - 92, y: y + 8, w: 72, h: 26, act: 'stage', id: stage.id });
+      }
+    });
+  } else {
+    viewProgress.quests.forEach((quest, i) => {
+      const y = panel.y + 46 + i * 62;
+      x.fillStyle = '#fff';
+      x.font = '15px ui-sans-serif,system-ui,sans-serif';
+      const kind = quest.kind === 'daily' ? '每日' : '主线';
+      x.fillText(kind + '  ' + quest.name, panel.x + 16, y + 16);
+      x.font = '12px ui-sans-serif,system-ui,sans-serif';
+      x.fillStyle = 'rgba(255,255,255,.7)';
+      x.fillText(quest.blurb + '  ·  ' + quest.progress + '/' + quest.goal + '  ·  ' + quest.reward, panel.x + 16, y + 36);
+      let label = '';
+      if (quest.status === 'open') label = '接取';
+      else if (quest.status === 'done') label = '交付';
+      else if (quest.status === 'accepted') label = quest.progress + '/' + quest.goal;
+      else label = '已交';
+      x.fillStyle = 'rgba(255,255,255,.06)';
+      x.strokeStyle = 'rgba(255,255,255,.5)';
+      x.strokeRect(panel.x + panel.w - 92, y + 8, 72, 26);
+      x.fillStyle = '#fff';
+      x.font = '13px ui-sans-serif,system-ui,sans-serif';
+      x.textAlign = 'center';
+      x.fillText(label, panel.x + panel.w - 56, y + 26);
+      x.textAlign = 'left';
+      if (quest.status === 'open' || quest.status === 'done') {
+        boardHits.push({ x: panel.x + panel.w - 92, y: y + 8, w: 72, h: 26, act: quest.status === 'open' ? 'accept' : 'turnin', id: quest.id });
+      }
+    });
+  }
+}
+
+function boardHitAt(pt) {
+  if (!pt) return null;
+  for (let i = boardHits.length - 1; i >= 0; i--) {
+    const hit = boardHits[i];
+    if (pt.x >= hit.x && pt.x <= hit.x + hit.w && pt.y >= hit.y && pt.y <= hit.y + hit.h) return hit;
+  }
+  return null;
+}
+
+function actBoard(hit) {
+  if (!hit) return;
+  if (hit.act === 'stage') {
+    board = '';
+    if (NET.active) NET.send({ type: 'campaign', stage: hit.id });
+    else startCampaign(hit.id);
+    return;
+  }
+  if (NET.active) {
+    NET.send({ type: hit.act === 'accept' ? 'accept' : 'turnin', id: hit.id });
+    return;
+  }
+  loadProfile();
+  const today = todayKey();
+  if (hit.act === 'accept') {
+    const result = Rules.acceptQuest(profile, hit.id, today);
+    if (!result.ok) noteGear(Rules.REASON[result.reason] || result.reason);
+  } else if (hit.act === 'turnin') {
+    const wallet = campaignOn ? gear : profile.gear;
+    const result = Rules.turnInQuest(profile, hit.id, today, wallet);
+    if (!result.ok) noteGear(Rules.REASON[result.reason] || result.reason);
+    else if (campaignOn) syncCampaignHearts(false);
+  }
+  saveProfile();
 }
 
 function draw() {
@@ -1058,16 +1517,22 @@ function draw() {
   drawOverlay();
   if (state === 'shop') drawShop();
   if (state === 'play') drawResetButton();
+  if (board) drawBoard();
 
-  if (state === 'play' || state === 'shop') {
+  if (state === 'play' || state === 'shop' || state === 'clear') {
     const left = Math.max(0, STEPS - roundProgress()) / 60;
     const wornStats = Rules.statsOf(gear);
     const live = liveStats();
+    const prog = progressView();
     const coreBit = live.core ? (live.core.kind === 'predict' ? '  预判核' : '  回避核') : (wornStats.core ? '  推理暂停' : '');
     const noiseBit = wornStats.noise ? '  幻觉' : '';
+    const campBit = campaignOn ? ('  ' + (prog.stageName || '') + '  Lv' + prog.level + (prog.title ? ' ' + prog.title : '') + '  XP ' + prog.xp + '/' + (prog.xpNext || '满') + (Rules.slowMul(Rules.stageById(stageId), round) < 1 ? '  放慢' : '')) : '';
+    const questBit = (prog.quests || []).filter(q => q.status === 'accepted' || q.status === 'done').map(q => q.name + ' ' + q.progress + '/' + q.goal).join('  ');
     const bits = state === 'shop'
-      ? ('推理  ' + tokenText(currentCoins()) + '  ' + (currentShopLeft() / 60).toFixed(1) + 's' + coreBit)
-      : ('第 ' + round + ' 轮  得分 ' + score + '  ' + tokenText(currentCoins()) + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (hp > 0 && maxHp > 1 ? '  HP' + hp : '') + (shield ? '  盾' + shield : '') + coreBit + noiseBit + (protecting() ? '  离开路线' : ''));
+      ? ('推理  ' + tokenText(currentCoins()) + '  ' + (currentShopLeft() / 60).toFixed(1) + 's' + coreBit + campBit)
+      : (state === 'clear'
+        ? ((gearMsg || '过关') + '  ' + tokenText(currentCoins()) + campBit)
+        : ('第 ' + round + ' 轮  得分 ' + score + '  ' + tokenText(currentCoins()) + '  回声 ' + ghosts.length + '  最佳 ' + best + '  ' + left.toFixed(1) + 's' + (hp > 0 && maxHp > 1 ? '  HP' + hp : '') + (shield ? '  盾' + shield : '') + coreBit + noiseBit + campBit + (protecting() ? '  离开路线' : '') + (questBit ? '  ' + questBit : '')));
     ui.textContent = bits + (gearMsg && state === 'play' ? '  ' + gearMsg : '') + (NET.active ? NET.hudSuffix() : '');
   } else ui.textContent = '';
   const dock = document.getElementById('dock');
@@ -1100,6 +1565,13 @@ window.__echo = function () {
     flicker: Math.floor(t / 2) % 2 === 0 ? 0.5 : 0.15,
     footDash: protecting(),
     coins: currentCoins(),
+    campaign: campaignOn,
+    stage: stageId,
+    stageName: stageLabel,
+    monsters: monsters.map(mon => ({ name: mon.name, hp: mon.hp, x: mon.x, y: mon.y, kind: mon.kind })),
+    level: profile ? profile.level : 1,
+    board: board,
+    boardHits: boardHits.map(h => ({ x: h.x, y: h.y, w: h.w, h: h.h, act: h.act, id: h.id })),
     hp: hp,
     maxHp: maxHp,
     shield: shield,
@@ -1117,8 +1589,9 @@ window.__echoShop = function (hit) {
 };
 
 function overHeadline() {
-  if (!NET.active) return '撞上了过去的自己';
-  return NET.deathText || '这一局结束了';
+  if (NET.active) return NET.deathText || '这一局结束了';
+  if (deathCause) return deathCause;
+  return '撞上了过去的自己';
 }
 
 function overDetail() {
@@ -1143,7 +1616,9 @@ addEventListener('keydown', e => {
     const worn = wornGear().filter(g => g.slot === slot)[0];
     if (worn) actShop({ act: 'train', uid: worn.uid });
   }
+  if (k === 'q' && !e.repeat && state !== 'shop') board = board === 'quests' ? '' : 'quests';
   if ((k === ' ' || k === 'enter') && state !== 'play') {
+    if (board) { board = ''; return; }
     if (state === 'shop') actShop({ act: 'ready' });
     else reset();
   }
@@ -1157,6 +1632,13 @@ function pointFrom(e) {
 c.onmousemove = pointFrom;
 c.onmousedown = e => {
   pointFrom(e);
+  if (board) {
+    const hit = boardHitAt(mouse);
+    if (hit) actBoard(hit);
+    else board = '';
+    mouse = null;
+    return;
+  }
   if (state === 'shop') {
     const hit = shopHitAt(mouse);
     if (hit) { actShop(hit); mouse = null; }
@@ -1171,6 +1653,14 @@ c.onmousedown = e => {
 };
 c.ontouchstart = e => {
   pointFrom(e);
+  if (board) {
+    const hit = boardHitAt(mouse);
+    if (hit) actBoard(hit);
+    else board = '';
+    mouse = null;
+    e.preventDefault();
+    return;
+  }
   if (state === 'shop') {
     const hit = shopHitAt(mouse);
     if (hit) { actShop(hit); mouse = null; }
@@ -1266,10 +1756,21 @@ NET.applyEvents = function (events) {
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     if (ev.type === 'die' && ev.id === this.id) {
-      this.deathText = ev.self ? '撞上了自己的回声' : ('撞上了' + ev.by + '的回声');
+      this.deathText = ev.by === '怪物' ? '被怪物打倒了' : (ev.self ? '撞上了自己的回声' : ('撞上了' + ev.by + '的回声'));
       boom(ev.x, ev.y, '#f55', 48);
       beep(110, 0.5, 'sawtooth', 0.25);
       shake = unit() * 0.02;
+    } else if (ev.type === 'boss') {
+      this.deathText = '回声王还在';
+    } else if (ev.type === 'clear') {
+      noteGear('打通了 ' + (ev.name || ''));
+      beep(523, 0.16, 'triangle', 0.16);
+    } else if (ev.type === 'level' && ev.id === this.id) {
+      noteGear('升到 Lv' + ev.level);
+    } else if (ev.type === 'kill' || ev.type === 'smack') {
+      boom(ev.x, ev.y, '#fff', 12);
+    } else if (ev.type === 'loot' && ev.id === this.id) {
+      beep(720, 0.08, 'triangle', 0.1);
     } else if (ev.type === 'die') {
       boom(ev.x, ev.y, '#f55', 24);
     } else if (ev.type === 'pick') {
@@ -1343,6 +1844,7 @@ NET.beforeDraw = function () {
   if (mine) {
     const next = Rules.emptyGear();
     next.t = s.coins || 0;
+    if (s.mode === 'campaign') next.level = s.level || 1;
     (mine.gear || []).forEach(g => { next.equipped[g.slot] = viewAsItem(g); });
     (s.bag || []).forEach(g => {
       if (g.kind === 'card') next.bag.push({ kind: 'card', id: g.id, count: g.count });
@@ -1356,7 +1858,27 @@ NET.beforeDraw = function () {
   if (s.state === 'play') state = 'play';
   else if (s.state === 'shop') state = 'shop';
   else if (s.state === 'over') state = 'over';
+  else if (s.state === 'clear') state = 'clear';
   else state = 'menu';
+  campaignOn = s.mode === 'campaign';
+  stageId = s.stageId || stageId;
+  stageLabel = s.stageName || '';
+  walls = s.walls || [];
+  monsters = s.monsters || [];
+  shots = s.shots || [];
+  drops = s.drops || [];
+  echoHoles = (s.ghosts || []).map(g => {
+    const holes = {};
+    (g.eaten || []).forEach(index => { holes[index] = 1; });
+    return holes;
+  });
+  this.level = s.level || 1;
+  this.xp = s.xp || 0;
+  this.xpNext = s.xpNext || 0;
+  this.unlocked = s.unlocked || 1;
+  this.quests = s.quests || [];
+  this.title = s.title || '';
+  this.stageName = s.stageName || '';
   this.coins = s.coins || 0;
   this.bag = s.bag || [];
   this.offers = s.offers || [];
@@ -1505,6 +2027,13 @@ NET.leave = function () {
   this.grace = false;
   this.deathText = '';
   state = 'menu';
+  campaignOn = false;
+  board = '';
+  monsters = [];
+  shots = [];
+  drops = [];
+  walls = [];
+  echoHoles = [];
   ghosts = [];
   rec = [];
   stars = [];
@@ -1585,9 +2114,20 @@ draw = function () {
 const soloReset = reset;
 reset = function () {
   if (NET.active || NET.connecting) {
-    if (NET.active) NET.requestStart();
+    if (!NET.active) return;
+    if (NET.snap && NET.snap.mode === 'campaign' && NET.state === 'over') {
+      NET.send({ type: 'campaign', stage: NET.snap.stageId || 1 });
+      return;
+    }
+    if (NET.snap && NET.snap.mode === 'campaign' && NET.state === 'clear') {
+      board = 'stages';
+      return;
+    }
+    NET.requestStart();
     return;
   }
+  if (campaignOn && state === 'over') { startCampaign(stageId); return; }
+  if (campaignOn && state === 'clear') { board = 'stages'; return; }
   soloReset();
 };
 
@@ -1597,6 +2137,20 @@ chooseArena = function () {
   soloChoose();
 };
 
+document.getElementById('campaign').addEventListener('click', function (e) {
+  e.stopPropagation();
+  e.preventDefault();
+  this.blur();
+  if (state === 'play' || state === 'shop') return;
+  board = board === 'stages' ? '' : 'stages';
+});
+document.getElementById('quests').addEventListener('click', function (e) {
+  e.stopPropagation();
+  e.preventDefault();
+  this.blur();
+  if (state === 'shop') return;
+  board = board === 'quests' ? '' : 'quests';
+});
 document.getElementById('multi').addEventListener('click', function (e) {
   e.stopPropagation();
   e.preventDefault();

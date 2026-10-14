@@ -8,6 +8,20 @@ const path = require('path');
 const { WebSocketServer } = require('ws');
 const rules = require('./shared');
 
+const profiles = new Map();
+
+function todayKey() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function loadProfile(name) {
+  if (!profiles.has(name)) profiles.set(name, rules.freshProfile());
+  const profile = profiles.get(name);
+  if (!profile.gear) profile.gear = rules.emptyGear();
+  profile.gear.level = profile.level || 1;
+  return profile;
+}
+
 const NAMES = ['甲', '乙', '丙', '丁', '戊', '己', '庚', '辛'];
 const COLORS = ['#ff8ad4', '#b8ff7a', '#ffd27a', '#d4a5ff', '#7affd4', '#ffaa7a', '#a0b4ff', '#7ad7ff'];
 const MAX_PLAYERS = 8;
@@ -98,6 +112,12 @@ function createRoom(name, dispose) {
     events: [],
     shopLeft: 0,
     seed: 1,
+    mode: 'free',
+    stageId: 0,
+    walls: [],
+    monsters: [],
+    shots: [],
+    drops: [],
     players: new Map(),
     bySocket: new Map(),
   };
@@ -110,8 +130,8 @@ function createRoom(name, dispose) {
     return room.state === 'play' && rules.protecting(room.ghosts.length, room.t);
   }
 
-  function blankCombat(player) {
-    player.gear = rules.emptyGear();
+  function blankCombat(player, keepGear) {
+    if (!keepGear) player.gear = rules.emptyGear();
     player.hp = 1;
     player.maxHp = 1;
     player.shield = 0;
@@ -127,10 +147,15 @@ function createRoom(name, dispose) {
 
   function syncVitals(player, fill) {
     const stats = rules.statsOf(player.gear);
-    player.maxHp = stats.maxHp;
+    if (room.mode === 'campaign' && player.profile) {
+      player.maxHp = rules.heartsOf(player.profile.level || 1, stats.bonusHp);
+      player.gear.level = player.profile.level || 1;
+    } else {
+      player.maxHp = stats.maxHp;
+    }
     player.warnAt = stats.warn;
     if (fill) {
-      player.hp = stats.maxHp;
+      player.hp = player.maxHp;
       player.shield = stats.blocks;
       player.iframes = 0;
       player.dashLeft = 0;
@@ -164,7 +189,7 @@ function createRoom(name, dispose) {
     if (player.dashLeft > 0) {
       rules.applyMove(player, player.input, rules.W, rules.H, {
         speed: stats.speed,
-        dash: { x: player.dashX, y: player.dashY, mul: stats.dash ? stats.dash.speed : stats.speed },
+        dash: { x: player.dashX, y: player.dashY, mul: player.dashMul || (stats.dash ? stats.dash.speed : stats.speed) },
       });
       player.dashLeft--;
       return;
@@ -183,25 +208,29 @@ function createRoom(name, dispose) {
   }
 
   function startDash(player) {
-    const stats = rules.poweredStats(player.gear);
     if (room.state !== 'play' || player.mode !== 'play') return;
-    if (!stats.dash || player.dashCd > 0 || player.dashLeft > 0) return;
-    if (!rules.payDash(player.gear)) {
+    const stats = rules.poweredStats(player.gear);
+    const dash = rules.attackDash(stats, (player.profile && player.profile.level) || 1, room.mode === 'campaign');
+    if (!dash || player.dashCd > 0 || player.dashLeft > 0) return;
+    if (dash.paid && !rules.payDash(player.gear)) {
       deny(player, 'not_enough_T');
       return;
     }
     const dir = facing(player);
     player.dashX = dir.x;
     player.dashY = dir.y;
-    player.dashLeft = stats.dash.frames;
-    player.dashCd = stats.dash.cd;
+    player.dashLeft = dash.frames;
+    player.dashCd = dash.cd;
+    player.dashMul = dash.speed;
+    player.dashHits = {};
     room.events.push({ type: 'dash', id: player.id });
   }
 
   function fillStars() {
     const playing = alive();
     let guard = 0;
-    while (room.stars.length < rules.starGoal(room.round) && guard++ < 4) spawnStar(room, playing);
+    const stage = room.mode === 'campaign' ? rules.stageById(room.stageId) : null;
+    while (room.stars.length < rules.starGoal(room.round, stage) && guard++ < 4) spawnStar(room, playing);
   }
 
   function snapshot() {
@@ -232,13 +261,26 @@ function createRoom(name, dispose) {
         warnAt: player.warnAt,
         ready: !!player.ready,
         gear: player.gear ? rules.publicGear(player.gear) : [],
+        level: player.profile ? player.profile.level : 1,
+        title: player.profile ? (player.profile.title || '') : '',
       })),
+      mode: room.mode,
+      stageId: room.stageId,
+      stageName: room.mode === 'campaign' && rules.stageById(room.stageId) ? rules.stageById(room.stageId).name : '',
+      stageRounds: room.mode === 'campaign' && rules.stageById(room.stageId) ? rules.stageById(room.stageId).rounds : 0,
+      walls: room.walls || [],
+      monsters: (room.monsters || []).map((mon) => ({
+        id: mon.id, kind: mon.kind, name: mon.name, x: mon.x, y: mon.y, hp: mon.hp, maxHp: mon.maxHp, r: mon.r, color: mon.color,
+      })),
+      shots: (room.shots || []).map((shot) => ({ x: shot.x, y: shot.y, r: shot.r })),
+      drops: (room.drops || []).map((drop) => ({ id: drop.id, x: drop.x, y: drop.y, kind: drop.kind, name: drop.item ? drop.item.name : '' })),
       shopLeft: room.shopLeft,
       ghosts: room.ghosts.map((ghost) => ({
         ownerId: ghost.ownerId,
         name: ghost.name,
         color: ghost.color,
         pts: ghost.pts,
+        eaten: Object.keys(ghost.eaten || {}).map(Number).slice(0, 80),
       })),
       trails: [...room.players.values()].filter((player) => player.mode === 'play' && player.rec.length).map((player) => ({
         id: player.id,
@@ -253,10 +295,17 @@ function createRoom(name, dispose) {
     room.events = [];
     for (const player of room.players.values()) {
       if (!player.socket || player.socket.readyState !== 1) continue;
+      if (!player.profile) player.profile = loadProfile(player.name);
       message.you = player.id;
       message.coins = player.gear ? player.gear.t : 0;
       message.bag = player.gear ? rules.bagView(player.gear) : [];
       message.offers = player.gear ? rules.offers(player.gear) : [];
+      message.level = player.profile.level || 1;
+      message.xp = player.profile.xp || 0;
+      message.xpNext = rules.xpToNext(player.profile.level || 1);
+      message.unlocked = player.profile.unlocked || 1;
+      message.quests = rules.questBoard(player.profile, todayKey());
+      message.title = player.profile.title || '';
       player.socket.send(JSON.stringify(message));
     }
   }
@@ -267,13 +316,17 @@ function createRoom(name, dispose) {
     for (const player of alive()) {
       let best = null;
       const stats = rules.poweredStats(player.gear);
+      const stage = room.mode === 'campaign' ? rules.stageById(room.stageId) : null;
+      const core = rules.mergeCore(stats.core, rules.stageEcho(stage, room.round));
       for (const ghost of room.ghosts) {
+        const index = Math.min(room.t, (ghost.pts || []).length - 1);
+        if (ghost.eaten && ghost.eaten[index]) continue;
         const q = rules.echoAt(ghost.pts, room.t, {
           x: player.x,
           y: player.y,
           vx: player.vx,
           vy: player.vy,
-          core: stats.core,
+          core: core,
           w: rules.W,
           h: rules.H,
         });
@@ -298,6 +351,7 @@ function createRoom(name, dispose) {
       }
       if (player.hp > 1) {
         player.hp--;
+        if (room.mode === 'campaign') player.stageDamage = (player.stageDamage || 0) + 1;
         player.iframes = rules.IFRAMES;
         room.events.push({ type: 'hurt', id: player.id, hp: player.hp, x: player.x, y: player.y, self: best.self });
         continue;
@@ -352,11 +406,88 @@ function createRoom(name, dispose) {
         player.score += Math.round(rules.SCORE_STAR * room.round * stats.score * gain);
         const coins = Math.round(rules.T_STAR * gain);
         player.gear.t += coins;
+        if (player.profile) rules.bumpQuest(player.profile, 'stars', 1, null, todayKey());
+        if (room.mode === 'campaign' && player.profile) {
+          const up = rules.addXp(player.profile, 1);
+          player.gear.t += up.bonus;
+          up.levels.forEach((level) => room.events.push({ type: 'level', id: player.id, level: level }));
+          remember(player);
+        }
         room.events.push({ type: 'pick', id: player.id, x: star.x, y: star.y, t: coins });
         return false;
       }
       return true;
     });
+  }
+
+  function remember(player) {
+    if (!player.profile || !player.gear) return;
+    player.gear.level = player.profile.level || 1;
+    player.profile.gear = rules.cloneGear(player.gear);
+    player.profile.gear.level = player.profile.level || 1;
+  }
+
+  function fightRoom() {
+    const stage = rules.stageById(room.stageId);
+    const players = alive();
+    const ghosts = room.ghosts.map((ghost) => ({ pts: ghost.pts, t: room.t }));
+    rules.stepMonsters(room.monsters, players, ghosts, stage, room.round, room.walls);
+    rules.eatEchoes(room.monsters, room.ghosts);
+    rules.kingBarrage(room.monsters, room.ghosts, players, room.shots, room.step, room.seed);
+    rules.stepShots(room.shots, room.walls);
+    for (const player of players) {
+      const events = rules.fightMonsters(player, room.monsters, room.shots, player.dashing);
+      events.forEach((event) => {
+        if (event.type === 'bite') player.stageDamage = (player.stageDamage || 0) + 1;
+        room.events.push(event);
+      });
+      if (player.hp <= 0 && player.mode === 'play') {
+        player.mode = 'dead';
+        player.hp = 0;
+        player.vx = 0;
+        player.vy = 0;
+        player.rec = [];
+        room.events.push({ type: 'die', id: player.id, by: '怪物', self: false, x: player.x, y: player.y });
+      }
+    }
+    const reaped = rules.reapMonsters(room.monsters, room.seed, room.step);
+    reaped.killed.forEach((mon) => {
+      const killer = [...room.players.values()].find((player) => player.id === mon.lastHit);
+      if (killer && killer.profile) {
+        rules.bumpQuest(killer.profile, 'kills', 1, null, todayKey());
+        if (mon.kind === 'king') rules.bumpQuest(killer.profile, 'king-v2', 1, { v2: rules.wornV2(killer.gear) }, todayKey());
+      }
+      room.events.push({ type: 'kill', id: mon.lastHit || '', name: mon.name, x: mon.x, y: mon.y });
+    });
+    room.drops = room.drops.concat(reaped.drops);
+    room.drops = room.drops.filter((drop) => {
+      for (const player of alive()) {
+        if (Math.hypot(drop.x - player.x, drop.y - player.y) >= 24) continue;
+        const levels = rules.takeDrop(player.gear, player.profile, drop);
+        levels.forEach((level) => room.events.push({ type: 'level', id: player.id, level: level }));
+        remember(player);
+        syncVitals(player, false);
+        room.events.push({ type: 'loot', id: player.id, kind: drop.kind, x: drop.x, y: drop.y });
+        return false;
+      }
+      return true;
+    });
+  }
+
+  function clearStage() {
+    const stage = rules.stageById(room.stageId);
+    for (const player of alive()) {
+      if (!player.profile) continue;
+      if (player.profile.unlocked < stage.id + 1) player.profile.unlocked = Math.min(rules.STAGES.length, stage.id + 1);
+      rules.bumpQuest(player.profile, 'clear', 1, { stage: stage.id }, todayKey());
+      if (!player.stageDamage) rules.bumpQuest(player.profile, 'flawless', 1, null, todayKey());
+      remember(player);
+    }
+    room.monsters = [];
+    room.shots = [];
+    room.drops = [];
+    room.state = 'clear';
+    room.events.push({ type: 'clear', stage: stage.id, name: stage.name });
   }
 
   function finishRound() {
@@ -368,6 +499,12 @@ function createRoom(name, dispose) {
       player.gear.t += Math.round(rules.T_ROUND * gain);
       rules.noteSamples(player.gear);
       rules.openStock(player.gear, room.seed, room.round, player.id);
+      if (room.mode === 'campaign' && player.profile) {
+        const up = rules.addXp(player.profile, 2);
+        player.gear.t += up.bonus;
+        up.levels.forEach((level) => room.events.push({ type: 'level', id: player.id, level: level }));
+        remember(player);
+      }
       if (player.rec.length) {
         room.ghosts.push({
           ownerId: player.id,
@@ -382,6 +519,15 @@ function createRoom(name, dispose) {
       syncVitals(player, true);
     }
     room.stars = [];
+    if (room.mode === 'campaign') {
+      const stage = rules.stageById(room.stageId);
+      const king = (room.monsters || []).some((mon) => mon.kind === 'king' && mon.hp > 0);
+      if (stage && room.round >= stage.rounds && stage.boss && king) {
+        room.state = 'over';
+        room.events.push({ type: 'boss', name: stage.name });
+        return;
+      }
+    }
     room.state = 'shop';
     room.shopLeft = rules.SHOP_STEPS;
     room.banner = 70;
@@ -389,8 +535,20 @@ function createRoom(name, dispose) {
   }
 
   function startNextRound() {
+    if (room.mode === 'campaign') {
+      const stage = rules.stageById(room.stageId);
+      if (stage && room.round >= stage.rounds) {
+        clearStage();
+        return;
+      }
+    }
     room.state = 'play';
     room.round += 1;
+    if (room.mode === 'campaign') {
+      const stage = rules.stageById(room.stageId);
+      room.monsters = rules.spawnWave(stage, room.round, room.seed, room.monsters);
+      room.shots = [];
+    }
     room.t = 0;
     room.step = 0;
     room.shopLeft = 0;
@@ -426,7 +584,11 @@ function createRoom(name, dispose) {
       room.state = 'over';
       return;
     }
-    for (const player of alive()) movePlayer(player);
+    for (const player of alive()) {
+      player.dashing = player.dashLeft > 0;
+      movePlayer(player);
+      if (room.mode === 'campaign') rules.pushOut(player, room.walls, 12);
+    }
     room.step += 1;
     room.t = room.step - 1;
     for (const player of alive()) {
@@ -440,6 +602,7 @@ function createRoom(name, dispose) {
       player.warnAt = rules.poweredStats(player.gear).warn;
     }
     for (const player of alive()) rules.tickDrain(player.gear, rules.statsOf(player.gear), room.step);
+    if (room.mode === 'campaign') fightRoom();
     collide();
     if (!alive().length) {
       room.state = 'over';
@@ -461,6 +624,7 @@ function createRoom(name, dispose) {
       return;
     }
     syncVitals(player, true);
+    if (room.mode === 'campaign') remember(player);
     room.events.push({ type: 'gear', id: player.id });
   }
 
@@ -473,8 +637,13 @@ function createRoom(name, dispose) {
     room.ghosts = [];
     room.stars = [];
     room.events = [];
+    room.shots = [];
+    room.drops = [];
     room.epoch += 1;
     room.seed = (Math.random() * 0x100000000) >>> 0;
+    const stage = room.mode === 'campaign' ? rules.stageById(room.stageId) : null;
+    room.walls = stage ? stage.walls : [];
+    room.monsters = stage ? rules.spawnWave(stage, 1, room.seed) : [];
     for (const player of room.players.values()) {
       player.mode = 'play';
       player.score = 0;
@@ -484,7 +653,17 @@ function createRoom(name, dispose) {
       player.vy = 0;
       player.rec = [];
       player.input = { ax: 0, ay: 0, mouse: null, keyboard: false };
-      blankCombat(player);
+      player.stageDamage = 0;
+      if (room.mode === 'campaign') {
+        player.profile = loadProfile(player.name);
+        player.gear = rules.cloneGear(player.profile.gear);
+        player.gear.level = player.profile.level || 1;
+        blankCombat(player, true);
+      } else {
+        player.profile = loadProfile(player.name);
+        blankCombat(player, false);
+      }
+      syncVitals(player, true);
       markCheckpoint(player);
     }
     room.shopLeft = 0;
@@ -660,7 +839,57 @@ function createRoom(name, dispose) {
     requestStart(socket) {
       if (!room.bySocket.has(socket)) return;
       if (room.state === 'play' || room.state === 'shop') return;
+      room.mode = 'free';
+      room.stageId = 0;
       beginMatch();
+    },
+    campaign(socket, stageId) {
+      if (!room.bySocket.has(socket)) return;
+      if (room.state === 'play' || room.state === 'shop') return;
+      const stage = rules.stageById(stageId | 0);
+      if (!stage) return;
+      for (const player of room.players.values()) {
+        const profile = loadProfile(player.name);
+        if ((profile.unlocked || 1) < stage.id) {
+          deny(player, 'locked');
+          return;
+        }
+      }
+      room.mode = 'campaign';
+      room.stageId = stage.id;
+      beginMatch();
+    },
+    backToLobby(socket) {
+      if (!room.bySocket.has(socket)) return;
+      if (room.state === 'play' || room.state === 'shop') return;
+      room.state = 'lobby';
+      room.mode = 'free';
+      room.monsters = [];
+      room.shots = [];
+      room.drops = [];
+      room.walls = [];
+      broadcast();
+    },
+    acceptQuest(socket, id) {
+      const player = room.bySocket.get(socket);
+      if (!player) return;
+      player.profile = player.profile || loadProfile(player.name);
+      const result = rules.acceptQuest(player.profile, id, todayKey());
+      if (!result.ok) deny(player, result.reason);
+    },
+    turnIn(socket, id) {
+      const player = room.bySocket.get(socket);
+      if (!player) return;
+      player.profile = player.profile || loadProfile(player.name);
+      const wallet = room.mode === 'campaign' && player.gear ? player.gear : player.profile.gear;
+      const result = rules.turnInQuest(player.profile, id, todayKey(), wallet);
+      if (!result.ok) {
+        deny(player, result.reason);
+        return;
+      }
+      if (room.mode === 'campaign' && player.gear) remember(player);
+      syncVitals(player, false);
+      room.events.push({ type: 'turnin', id: player.id, quest: id });
     },
     leave(socket) {
       const player = room.bySocket.get(socket);
@@ -720,6 +949,10 @@ function createApp(options = {}) {
       if (msg.type === 'hello') room.hello(socket, msg);
       else if (msg.type === 'input') room.input(socket, msg);
       else if (msg.type === 'start') room.requestStart(socket);
+      else if (msg.type === 'campaign') room.campaign(socket, msg.stage);
+      else if (msg.type === 'accept') room.acceptQuest(socket, msg.id);
+      else if (msg.type === 'turnin') room.turnIn(socket, msg.id);
+      else if (msg.type === 'lobby') room.backToLobby(socket);
       else if (msg.type === 'dash') room.dash(socket);
       else if (msg.type === 'buy') room.buy(socket, msg.id);
       else if (msg.type === 'buyItem') room.buyItem(socket, msg.id);
