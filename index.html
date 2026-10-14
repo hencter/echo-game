@@ -32,7 +32,6 @@ const c = document.getElementById('c');
 const x = c.getContext('2d');
 const ui = document.getElementById('ui');
 const STEPS = 360;
-const GRACE = 60;
 const CAP_W = 960;
 const CAP_H = 540;
 
@@ -885,8 +884,10 @@ function strokeRange(ctx, pts, a, b, style, width, holes) {
 }
 
 function protecting() {
-  if (NET.active) return ghosts.length > 0 && t < (NET.graceUntil || 0);
-  return ghosts.length > 0 && t < GRACE;
+  // Online matches draw from the server grace bit. Solo uses the same
+  // predicate the room uses: ghosts are present and the round tick is < 60.
+  if (NET.active) return !!NET.grace;
+  return Rules.protecting(ghosts.length, t);
 }
 
 function warnLead() {
@@ -1841,8 +1842,8 @@ window.__echo = function () {
     view: {ox: view.ox, oy: view.oy, s: view.s},
     steps: STEPS,
     rec0: rec[0] ? {x: rec[0].x, y: rec[0].y} : null,
-    grace: protecting() ? GRACE - t : 0,
-    flicker: Math.floor(t / 2) % 2 === 0 ? 0.5 : 0.15,
+    grace: protecting() ? Math.max(0, (NET.active ? NET.graceUntil : Rules.GRACE) - t) : 0,
+    flicker: echoFlicker(),
     footDash: protecting(),
     coins: currentCoins(),
     role: roleId,
@@ -1867,7 +1868,7 @@ window.__echo = function () {
     endPrompt: endPrompt,
     deathText: NET.active ? (NET.deathText || '') : (deathCause || ''),
     deathLines: listedDeaths(),
-    graceUntil: NET.active ? (NET.graceUntil || 0) : GRACE,
+    graceUntil: NET.active ? (NET.graceUntil || 0) : Rules.GRACE,
     warn: warnLead(),
   };
 };
