@@ -69,6 +69,7 @@ async function main() {
     await testItems(app, port);
     await testCampaign(app, port);
     await testRoles(app, port);
+    await testShopCountdown(app, port);
     console.log('net rules ok');
   } finally {
     await app.close();
@@ -481,6 +482,31 @@ async function testRoles(app, port) {
   await waitFor(a, (snap) => other(snap).role === 'whale' && me(snap).role === 'whale', '乙 switched and both clients agree');
   a.ws.close();
   b.ws.close();
+  await flush();
+}
+
+async function testShopCountdown(app, port) {
+  const rules = require('./shared');
+  assert(rules.GRACE === 60, 'the one-second grace stays 60 steps');
+  const a = await openClient(port, 'shopwait', '甲');
+  await waitFor(a, (snap) => snap.players.length === 1 && snap.state === 'lobby', 'shopwait lobby');
+  send(a, { type: 'start' });
+  await waitFor(a, (snap) => snap.state === 'play' && snap.round === 1, 'shopwait start');
+  for (let i = 0; i < rules.STEPS; i++) app.tickAll();
+  await waitFor(a, (snap) => snap.state === 'shop' && snap.shopLeft > rules.SHOP_STEPS - 5, 'shopwait shop');
+  assert(me(a.last).ready === false, 'the countdown starts before anyone is ready');
+  const left = a.last.shopLeft;
+  for (let i = 0; i < left - 1; i++) app.tickAll();
+  await flush();
+  assert(a.last.state === 'shop' && a.last.round === 1, 'the shop stays open while the timer is still running');
+  assert(me(a.last).ready === false, 'nobody pressed ready');
+  app.tickAll();
+  await waitFor(a, (snap) => snap.state === 'play' && snap.round === 2, 'countdown opens the next round');
+  assert(a.last.t === 0 && a.last.grace === true, 'the next round starts on the first protected step');
+  for (let i = 0; i < 30; i++) app.tickAll();
+  await flush();
+  assert(a.last.state === 'play' && a.last.round === 2 && a.last.t === 29 && a.last.grace === true, 'an unconfirmed shop still gets the full 60-step grace');
+  a.ws.close();
   await flush();
 }
 

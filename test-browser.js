@@ -90,6 +90,45 @@ async function testSolo(browser, port) {
   const grace = await page.evaluate(() => window.__echo());
   assert(grace.grace > 0 && grace.t < 60, 'solo grace uses the 60-step rule');
   assert(grace.flicker === (Math.floor(grace.t / 2) % 2 === 0 ? 0.5 : 0.15), 'solo flicker follows the step');
+  const ring = await page.evaluate(() => {
+    const echo = window.__echo();
+    const ghost = (echo.ghostPos || []).find((g) => g);
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const dpr = canvas.width / window.innerWidth;
+    const gx = (echo.view.ox + ghost.x * echo.view.s) * dpr;
+    const gy = (echo.view.oy + ghost.y * echo.view.s) * dpr;
+    const rad = 18 * dpr;
+    const x0 = Math.max(0, Math.floor(gx - rad));
+    const y0 = Math.max(0, Math.floor(gy - rad));
+    const w = Math.min(canvas.width, Math.ceil(gx + rad)) - x0;
+    const h = Math.min(canvas.height, Math.ceil(gy + rad)) - y0;
+    const img = ctx.getImageData(x0, y0, Math.max(1, w), Math.max(1, h));
+    let n = 0;
+    let sx = 0;
+    let sy = 0;
+    let maxY = -1;
+    for (let y = 0; y < img.height; y++) {
+      for (let x = 0; x < img.width; x++) {
+        const i = (y * img.width + x) * 4;
+        if (img.data[i] < 235 || img.data[i + 1] < 235 || img.data[i + 2] < 235) continue;
+        n++;
+        sx += x0 + x;
+        sy += y0 + y;
+        if (y0 + y > maxY) maxY = y0 + y;
+      }
+    }
+    return {
+      n,
+      gapX: n ? sx / n / dpr - ghost.x : null,
+      gapY: n ? sy / n / dpr - ghost.y : null,
+      maxY: maxY / dpr,
+      H: echo.H,
+    };
+  });
+  assert(ring.n >= 6, 'the foot ring is visible, saw ' + ring.n);
+  assert(Math.abs(ring.gapX) < 3 && Math.abs(ring.gapY) < 3, 'the ring center stays on the foot, gap ' + ring.gapX + ',' + ring.gapY);
+  assert(ring.maxY < ring.H - 2, 'the ring stays inside the canvas');
   await key(page, 'keyup', 'ArrowLeft');
   assert(!errors.length, 'solo console errors ' + errors.join(' | '));
   await page.close();
