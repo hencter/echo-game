@@ -172,6 +172,12 @@
     return ghostCount > 0 && t < GRACE;
   }
 
+  function echoDeathLine(victimId, ghostOwnerId, ownerName) {
+    if (!ghostOwnerId) return '被怪物打倒了';
+    if (ghostOwnerId === victimId) return '撞上了自己的回声';
+    return '撞上了' + (ownerName || '回声') + '的回声';
+  }
+
   function axis(v) {
     const n = Number(v);
     if (!Number.isFinite(n) || n === 0) return 0;
@@ -1171,6 +1177,7 @@
     collideDist: collideDist,
     starGoal: starGoal,
     protecting: protecting,
+    echoDeathLine: echoDeathLine,
     axis: axis,
     applyMove: applyMove,
     emptyGear: emptyGear,

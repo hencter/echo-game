@@ -85,6 +85,8 @@ let dashY = 0;
 let shopLeft = 0;
 let shopReady = false;
 let shopHits = [];
+let endHits = [];
+let endPrompt = '';
 let gearMsg = '';
 let gearMsgT = 0;
 let soloSeed = 1;
@@ -123,6 +125,7 @@ let NET = {
   deathText: '',
   savedBest: false,
   ws: null,
+  intentionalClose: false,
 };
 const echoLayer = document.createElement('canvas');
 const ex = echoLayer.getContext('2d');
@@ -271,6 +274,39 @@ function reset() {
   takeCheckpoint();
   state = 'play';
   beep(523, 0.08, 'triangle', 0.12);
+}
+
+function returnToMenu() {
+  if (NET.active || NET.connecting) return;
+  chooseArena();
+  layout();
+  state = 'menu';
+  campaignOn = false;
+  board = '';
+  deathCause = '';
+  gearMsg = '';
+  gearMsgT = 0;
+  p = null;
+  vx = 0;
+  vy = 0;
+  ghosts = [];
+  rec = [];
+  stars = [];
+  monsters = [];
+  shots = [];
+  drops = [];
+  walls = [];
+  echoHoles = [];
+  parts = [];
+  banner = 0;
+  shopLeft = 0;
+  shopReady = false;
+  round = 1;
+  t = 0;
+  score = 0;
+  endHits = [];
+  endPrompt = '';
+  syncMenuButtons();
 }
 
 function die(cause) {
@@ -955,7 +991,7 @@ function roundProgress() {
 }
 
 function ghostColor(i, a) {
-  return 'hsla(' + ((328 + i * 19) % 360) + ',88%,64%,' + a + ')';
+  return 'hsla(' + ((328 + i * 19) % 360) + ',88%,64%,' + (a == null ? 1 : a) + ')';
 }
 
 function echoFlicker() {
@@ -1424,8 +1460,65 @@ function castHitAt(pt) {
   return null;
 }
 
+function endHitAt(pt) {
+  if (!pt) return null;
+  for (let i = endHits.length - 1; i >= 0; i--) {
+    const hit = endHits[i];
+    if (pt.x >= hit.x && pt.x <= hit.x + hit.w && pt.y >= hit.y && pt.y <= hit.y + hit.h) return hit;
+  }
+  return null;
+}
+
+function drawEndCard(title, detail, primary) {
+  endHits = [];
+  const u = unit();
+  x.fillStyle = 'rgba(6,8,18,.58)';
+  x.fillRect(0, 0, LW, LH);
+  const bw = Math.min(LW - 48, u * 1.7);
+  const soloEnd = !NET.active;
+  const bh = soloEnd ? u * 0.52 : u * 0.42;
+  const bx = (LW - bw) / 2;
+  const by = (LH - bh) / 2;
+  x.fillStyle = 'rgba(12,16,32,.92)';
+  x.beginPath();
+  x.roundRect(bx, by, bw, bh, 18);
+  x.fill();
+  x.strokeStyle = 'rgba(255,255,255,.18)';
+  x.lineWidth = 2;
+  x.stroke();
+  x.fillStyle = '#fff';
+  x.textAlign = 'center';
+  x.font = 'bold ' + Math.round(u * 0.055) + 'px ui-sans-serif,system-ui,sans-serif';
+  x.fillText(title, LW / 2, by + 58);
+  x.font = Math.round(u * 0.028) + 'px ui-sans-serif,system-ui,sans-serif';
+  x.fillText(detail, LW / 2, by + 98);
+  x.fillStyle = 'rgba(255,255,255,.88)';
+  x.fillText(primary, LW / 2, by + 136);
+  endPrompt = primary;
+  if (!soloEnd) return;
+  const hw = 168;
+  const hh = 34;
+  const hx = LW / 2 - hw / 2;
+  const hy = by + bh - 72;
+  x.strokeStyle = '#fff';
+  x.lineWidth = 1.5;
+  x.strokeRect(hx, hy, hw, hh);
+  x.font = '16px ui-sans-serif,system-ui,sans-serif';
+  x.fillStyle = '#fff';
+  x.fillText('回主菜单', LW / 2, hy + 22);
+  endHits.push({ x: hx, y: hy, w: hw, h: hh, act: 'menu' });
+  x.font = '13px ui-sans-serif,system-ui,sans-serif';
+  x.fillStyle = 'rgba(255,255,255,.72)';
+  x.fillText('Esc', LW / 2, hy + hh + 18);
+  endPrompt = primary + '  ·  Esc 或点「回主菜单」';
+}
+
 function drawOverlay() {
   castHits = [];
+  if (state !== 'over' && state !== 'clear') {
+    endHits = [];
+    endPrompt = '';
+  }
   x.fillStyle = '#fff';
   x.textAlign = 'center';
   const u = unit();
@@ -1477,47 +1570,14 @@ function drawOverlay() {
     x.textAlign = 'center';
   }
   if (state === 'over') {
-    x.fillStyle = 'rgba(6,8,18,.58)';
-    x.fillRect(0, 0, LW, LH);
-    const bw = Math.min(LW - 48, u * 1.62);
-    const bh = u * 0.4;
-    const bx = (LW - bw) / 2;
-    const by = (LH - bh) / 2;
-    x.fillStyle = 'rgba(12,16,32,.92)';
-    x.beginPath();
-    x.roundRect(bx, by, bw, bh, 18);
-    x.fill();
-    x.strokeStyle = 'rgba(255,255,255,.18)';
-    x.lineWidth = 2;
-    x.stroke();
-    x.fillStyle = '#fff';
-    x.font = 'bold ' + Math.round(u * 0.07) + 'px ui-sans-serif,system-ui,sans-serif';
-    x.fillText(overHeadline(), LW / 2, by + bh * 0.38);
-    x.font = Math.round(u * 0.034) + 'px ui-sans-serif,system-ui,sans-serif';
-    x.fillText(overDetail(), LW / 2, by + bh * 0.62);
-    x.fillStyle = 'rgba(255,255,255,.8)';
-    x.fillText(campaignOn ? '点击 / 空格 重试这一关' : '点击 / 空格 再来', LW / 2, by + bh * 0.84);
+    drawEndCard(
+      overHeadline(),
+      overDetail(),
+      campaignOn ? '空格或点击画面 重试这一关' : '空格或点击画面 再来一局'
+    );
   }
   if (state === 'clear') {
-    x.fillStyle = 'rgba(6,8,18,.58)';
-    x.fillRect(0, 0, LW, LH);
-    const bw = Math.min(LW - 48, u * 1.62);
-    const bh = u * 0.36;
-    const bx = (LW - bw) / 2;
-    const by = (LH - bh) / 2;
-    x.fillStyle = 'rgba(12,16,32,.92)';
-    x.beginPath();
-    x.roundRect(bx, by, bw, bh, 18);
-    x.fill();
-    x.strokeStyle = 'rgba(255,255,255,.18)';
-    x.lineWidth = 2;
-    x.stroke();
-    x.fillStyle = '#fff';
-    x.font = 'bold ' + Math.round(u * 0.06) + 'px ui-sans-serif,system-ui,sans-serif';
-    x.fillText(gearMsg || '这一关打通了', LW / 2, by + bh * 0.4);
-    x.font = Math.round(u * 0.03) + 'px ui-sans-serif,system-ui,sans-serif';
-    x.fillStyle = 'rgba(255,255,255,.86)';
-    x.fillText('下一关已解锁。点「闯关」继续，空格打开选关', LW / 2, by + bh * 0.72);
+    drawEndCard(gearMsg || '这一关打通了', '下一关已解锁', '空格打开选关');
   }
 }
 
@@ -1719,6 +1779,8 @@ window.__echo = function () {
     bag: currentBag(),
     worn: wornGear(),
     shopHits: shopHits.map(h => ({ x: h.x, y: h.y, w: h.w, h: h.h, act: h.act, id: h.id || '', slot: h.slot || '' })),
+    endHits: endHits.map(h => ({ x: h.x, y: h.y, w: h.w, h: h.h, act: h.act })),
+    endPrompt: endPrompt,
     warn: warnLead(),
   };
 };
@@ -1756,6 +1818,10 @@ addEventListener('keydown', e => {
     if (worn) actShop({ act: 'train', uid: worn.uid });
   }
   if (k === 'q' && !e.repeat && state !== 'shop') board = board === 'quests' ? '' : 'quests';
+  if (k === 'escape' && !e.repeat && !NET.active && (state === 'over' || state === 'clear')) {
+    returnToMenu();
+    return;
+  }
   if ((k === ' ' || k === 'enter') && state !== 'play') {
     if (board) { board = ''; return; }
     if (state === 'shop') actShop({ act: 'ready' });
@@ -1793,6 +1859,14 @@ c.onmousedown = e => {
     mouse = null;
     return;
   }
+  if (!NET.active && (state === 'over' || state === 'clear')) {
+    const endHit = endHitAt(mouse);
+    if (endHit && endHit.act === 'menu') {
+      returnToMenu();
+      mouse = null;
+      return;
+    }
+  }
   if (state !== 'play') reset();
 };
 c.ontouchstart = e => {
@@ -1822,6 +1896,15 @@ c.ontouchstart = e => {
     mouse = null;
     e.preventDefault();
     return;
+  }
+  if (!NET.active && (state === 'over' || state === 'clear')) {
+    const endHit = endHitAt(mouse);
+    if (endHit && endHit.act === 'menu') {
+      returnToMenu();
+      mouse = null;
+      e.preventDefault();
+      return;
+    }
   }
   if (state !== 'play') reset();
   e.preventDefault();
@@ -1902,11 +1985,24 @@ NET.lockArena = function () {
   layout();
 };
 
+NET.ownerName = function (ownerId) {
+  if (!ownerId || !this.snap) return '';
+  const players = this.snap.players || [];
+  for (let i = 0; i < players.length; i++) {
+    if (players[i].id === ownerId && players[i].name) return players[i].name;
+  }
+  const ghosts = this.snap.ghosts || [];
+  for (let i = 0; i < ghosts.length; i++) {
+    if (ghosts[i].ownerId === ownerId && ghosts[i].name) return ghosts[i].name;
+  }
+  return '';
+};
+
 NET.applyEvents = function (events) {
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
-    if (ev.type === 'die' && ev.id === this.id) {
-      this.deathText = ev.by === '怪物' ? '被怪物打倒了' : (ev.self ? '撞上了自己的回声' : ('撞上了' + ev.by + '的回声'));
+    if (ev.type === 'die' && ev.victim_id === this.id) {
+      this.deathText = Rules.echoDeathLine(ev.victim_id, ev.ghost_owner_id, this.ownerName(ev.ghost_owner_id));
       boom(ev.x, ev.y, '#f55', 48);
       beep(110, 0.5, 'sawtooth', 0.25);
       shake = unit() * 0.02;
@@ -2115,23 +2211,31 @@ NET.drawActors = function () {
         x.restore();
       }
     }
+    x.save();
+    x.globalAlpha = 1;
     x.fillStyle = '#fff';
     x.font = '12px ui-sans-serif,system-ui,sans-serif';
     x.textAlign = 'center';
     const nameY = sheeted ? py - Rules.SPRITE.footY - 4 : py - bodyR() - 6;
     x.fillText(pl.name, px, nameY);
+    x.restore();
     drawBadges(px, py, pl.gear || [], sheeted ? py - Rules.SPRITE.footY - 16 : null);
     drawPips(px, py, pl.hp, pl.maxHp, pl.shield);
   }
   const meta = this.ghostMeta || [];
   for (let i = 0; i < ghosts.length && i < meta.length; i++) {
-    const g = ghosts[i];
-    const q = g[Math.min(Math.max(t, 0), g.length - 1)];
-    if (!q || !meta[i].name) continue;
-    x.fillStyle = '#fff';
-    x.font = '12px ui-sans-serif,system-ui,sans-serif';
+    if (!meta[i] || !meta[i].name) continue;
+    const n = Math.min(Math.max(t, 0), ghosts[i].length - 1);
+    if (echoHoles[i] && echoHoles[i][n]) continue;
+    const head = echoHead(ghosts[i]);
+    if (!head) continue;
+    x.save();
+    x.globalAlpha = 0.5;
+    x.fillStyle = ghostColor(i);
+    x.font = '10px ui-sans-serif,system-ui,sans-serif';
     x.textAlign = 'center';
-    x.fillText(meta[i].name, q.x, q.y - bodyR() - 8);
+    x.fillText(meta[i].name, head.x, head.y + 20);
+    x.restore();
   }
   if (state === 'play' && roundProgress() >= STEPS - warnLead()) {
     for (let i = 0; i < players.length; i++) {
@@ -2165,8 +2269,19 @@ NET.updateChrome = function () {
   btn.hidden = false;
   if (leave) leave.hidden = false;
   btn.textContent = this.state === 'over' ? '再来一局' : ('开始对局（' + n + ' 人）');
-  this.note('同一块 960×540 · 空格或按钮开始');
+  this.syncHint();
   syncMenuButtons();
+};
+
+NET.syncHint = function () {
+  if (!this.active || this.connecting) return;
+  if (state === 'menu') this.note('同一块 960×540 · 空格或按钮开始');
+  else if (state === 'play' || state === 'shop' || state === 'over' || state === 'clear') this.note('');
+};
+
+NET.offlineNote = function () {
+  const host = location.host || '127.0.0.1:8787';
+  return '连不上服务器。在仓库运行 npm install && npm start，再打开 http://' + host + '/';
 };
 
 NET.requestStart = function () {
@@ -2178,6 +2293,7 @@ NET.requestStart = function () {
 };
 
 NET.leave = function () {
+  this.intentionalClose = true;
   if (this.ws) this.ws.close();
   this.ws = null;
   this.active = false;
@@ -2212,9 +2328,10 @@ NET.connect = function () {
   const name = params.get('name') || '';
   const proto = location.protocol === 'https:' ? 'wss://' : 'ws://';
   let ws;
+  this.intentionalClose = false;
   try { ws = new WebSocket(proto + location.host + '/ws?room=' + encodeURIComponent(room)); }
   catch (e) {
-    this.note('连不上服务器。先运行 npm start。');
+    this.note(this.offlineNote());
     return;
   }
   this.ws = ws;
@@ -2230,14 +2347,22 @@ NET.connect = function () {
   };
   ws.onclose = function () {
     const was = self.active;
+    const intentional = self.intentionalClose;
+    self.intentionalClose = false;
     self.ws = null;
     self.active = false;
     self.connecting = false;
     self.grace = false;
+    if (intentional) {
+      state = 'menu';
+      self.note('');
+      self.updateChrome();
+      return;
+    }
     if (was) {
       state = 'menu';
       self.note('和服务器断开了。可以直接空格单人重开。');
-    } else self.note('连不上服务器。在仓库运行 npm install && npm start，再打开 http://127.0.0.1:8787/');
+    } else self.note(self.offlineNote());
     self.updateChrome();
   };
 };
@@ -2271,6 +2396,7 @@ const soloDraw = draw;
 draw = function () {
   if (NET.active) NET.beforeDraw();
   soloDraw();
+  if (NET.active) NET.syncHint();
 };
 
 const soloReset = reset;
