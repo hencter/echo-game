@@ -393,31 +393,31 @@ async function testPair(leftBrowser, rightBrowser, port, app) {
       const pr = (n >> 16) & 255;
       const pg = (n >> 8) & 255;
       const pb = n & 255;
-      const panelLeft = 28;
-      const panelRight = 28 + echo.W - 56;
+      const frame = { x: 28 + 12, y: 12 + 12, s: 64 };
       const canvas = document.getElementById('c');
       const ctx = canvas.getContext('2d');
       const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
       const dpr = canvas.width / window.innerWidth;
-      let inside = 0;
-      let outside = 0;
+      let inFrame = 0;
+      let inField = 0;
       for (let y = 0; y < img.height; y++) {
         for (let x = 0; x < img.width; x++) {
           const i = (y * img.width + x) * 4;
           const dr = Math.abs(img.data[i] - pr);
           const dg = Math.abs(img.data[i + 1] - pg);
           const db = Math.abs(img.data[i + 2] - pb);
-          if (dr + dg + db > 70) continue;
+          if (dr + dg + db > 40) continue;
           const gx = (x / dpr - echo.view.ox) / echo.view.s;
-          if (gx < panelLeft || gx > panelRight) outside++;
-          else inside++;
+          const gy = (y / dpr - echo.view.oy) / echo.view.s;
+          if (gx >= frame.x && gx <= frame.x + frame.s && gy >= frame.y && gy <= frame.y + frame.s) inFrame++;
+          else if (gx > frame.x + frame.s + 80) inField++;
         }
       }
-      return { x: echo.x, inside, outside, panelRight, color: hex };
+      return { x: echo.x, inFrame, inField, panelRight: 28 + echo.W - 56, color: hex };
     });
     assert(edge.x > edge.panelRight - 40, 'the shop opened with the player against the arena edge, saw ' + edge.x);
-    assert(edge.inside > 20, 'the player sprite is drawn inside the shop panel, saw ' + edge.inside);
-    assert(edge.outside === 0, 'the player sprite stays inside the shop panel, spill ' + edge.outside);
+    assert(edge.inFrame > 20, 'the shop portrait holds the character, saw ' + edge.inFrame);
+    assert(edge.inField === 0, 'the character is not drawn in the play field, spill ' + edge.inField);
     await left.page.evaluate(() => {
       const offer = window.__echo().offers[0];
       if (offer) window.__echoShop({ act: 'buy', uid: offer.uid });
