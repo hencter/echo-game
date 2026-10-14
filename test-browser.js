@@ -41,6 +41,8 @@ async function main() {
   const solo = await launch(0);
   try {
     await testSolo(solo, port);
+    await testWhaleCard(solo, port);
+    await testMenuGap(solo, port);
     await testEndMenu(solo, port);
   } finally {
     await solo.close();
@@ -48,6 +50,8 @@ async function main() {
   const left = await launch(0);
   const right = await launch(980);
   try {
+    await testEsc(left, right, port);
+    await testDeathNames(left, right, port);
     await testPair(left, right, port, app);
     console.log('browser ok');
   } finally {
@@ -148,7 +152,69 @@ async function testSolo(browser, port) {
   assert(ring.maxY < ring.H - 2, 'the ring stays inside the canvas');
   await key(page, 'keyup', 'ArrowLeft');
   assert(!errors.length, 'solo console errors ' + errors.join(' | '));
-  await page.close();
+}
+
+async function testWhaleCard(browser, port) {
+  const { page, errors } = await boot(browser, port, '鲸');
+  await until(page, () => (window.__echo().castHits || []).some((hit) => hit.id === 'whale'), 'whale card');
+  const hit = await page.evaluate(() => {
+    const card = window.__echo().castHits.find((item) => item.id === 'whale');
+    return { x: card.x + card.w / 2, y: card.y + card.h / 2 };
+  });
+  await page.mouse.click(hit.x, hit.y);
+  await sleep(120);
+  await until(page, () => window.__echo().role === 'whale' && window.__echo().sheet, 'whale sheet', 4000);
+  const picked = await page.evaluate(() => window.__echo());
+  assert(picked.state === 'menu', 'the whale card does not start a match');
+  assert(picked.role === 'whale', 'the whale card selects the whale');
+  await page.screenshot({ path: path.join(OUT, 'whale-card.png') });
+  await key(page, 'keydown', ' ');
+  await until(page, () => window.__echo().state === 'play', 'space starts after the whale is selected');
+  const playing = await page.evaluate(() => window.__echo());
+  assert(playing.role === 'whale', 'the match keeps the selected whale');
+  assert(!errors.length, 'whale card errors ' + errors.join(' | '));
+}
+
+async function testMenuGap(browser, port) {
+  const { page, errors } = await boot(browser, port, '窄');
+  await page.setViewport({ width: 480, height: 540, deviceScaleFactor: 1 });
+  await sleep(200);
+  await page.evaluate(() => window.dispatchEvent(new Event('resize')));
+  await sleep(200);
+  const gap = await page.evaluate(() => {
+    const canvas = document.getElementById('c');
+    const ctx = canvas.getContext('2d');
+    const img = ctx.getImageData(0, 0, canvas.width, Math.min(canvas.height, 180));
+    const rows = [];
+    for (let y = 0; y < img.height; y++) {
+      let n = 0;
+      const x0 = Math.floor(img.width * 0.28);
+      const x1 = Math.floor(img.width * 0.72);
+      for (let x = x0; x < x1; x++) {
+        const i = (y * img.width + x) * 4;
+        if (img.data[i] > 170 && img.data[i + 1] > 170 && img.data[i + 2] > 170) n++;
+      }
+      if (n > 4) rows.push(y);
+    }
+    const runs = [];
+    rows.forEach((y) => {
+      const last = runs[runs.length - 1];
+      if (!last || y > last.end + 1) runs.push({ start: y, end: y });
+      else last.end = y;
+    });
+    const first = runs[0] || { start: 0, end: 0 };
+    const second = runs[1] || { start: 0, end: 0 };
+    return {
+      runs: runs.length,
+      titleH: first.end - first.start + 1,
+      split: runs.length > 1 ? second.start - first.end - 1 : 0,
+    };
+  });
+  await page.screenshot({ path: path.join(OUT, 'menu-half.png') });
+  assert(gap.runs >= 2, 'the half-width menu draws the title and the intro apart');
+  assert(gap.titleH <= 40, 'the title is its own line, height ' + gap.titleH);
+  assert(gap.split >= 6, 'the title and the intro do not overlap, gap ' + gap.split);
+  assert(!errors.length, 'menu gap errors ' + errors.join(' | '));
 }
 
 async function testEndMenu(browser, port) {
@@ -187,7 +253,6 @@ async function testEndMenu(browser, port) {
   const keyed = await hiddenButtons(page);
   assert(!keyed.campaign && !keyed.quests && !keyed.multi, 'escape shows the mode buttons again');
   assert(!errors.length, 'end menu errors ' + errors.join(' | '));
-  await page.close();
 }
 
 function windowActive(net) {
@@ -222,6 +287,59 @@ async function until(page, pred, label, timeout = 12000) {
     await sleep(80);
   }
   throw new Error('timeout ' + label + ' ' + JSON.stringify(last));
+}
+
+async function testEsc(leftBrowser, rightBrowser, port) {
+  const left = await boot(leftBrowser, port, '甲');
+  const right = await boot(rightBrowser, port, '乙');
+  await left.page.evaluate(() => document.getElementById('multi').click());
+  await right.page.evaluate(() => document.getElementById('multi').click());
+  await until(left.page, () => window.__echoNet().active && window.__echoNet().players.length === 2, 'esc lobby');
+  await key(left.page, 'keydown', ' ');
+  await key(left.page, 'keyup', ' ');
+  await until(left.page, () => window.__echo().state === 'play', 'esc play');
+  await key(left.page, 'keydown', 'Escape');
+  await until(left.page, () => !window.__echoNet().active && window.__echo().state === 'menu', 'esc leaves the match');
+  const playNote = await left.page.evaluate(() => document.getElementById('netmsg').textContent || '');
+  assert(playNote.indexOf('连不上') < 0, 'esc during a match is not a connection failure, saw ' + playNote);
+  const back = await hiddenButtons(left.page);
+  assert(!back.campaign && !back.quests && !back.multi, 'esc restores the menu buttons');
+  await left.page.evaluate(() => document.getElementById('multi').click());
+  await until(left.page, () => window.__echoNet().active && window.__echoNet().players.length === 2, 'esc lobby again');
+  await key(right.page, 'keydown', ' ');
+  await key(right.page, 'keyup', ' ');
+  await until(left.page, () => window.__echo().state === 'shop', 'esc shop', 12000);
+  await key(left.page, 'keydown', 'Escape');
+  await until(left.page, () => !window.__echoNet().active && window.__echo().state === 'menu', 'esc leaves the shop');
+  const shopNote = await left.page.evaluate(() => document.getElementById('netmsg').textContent || '');
+  assert(shopNote.indexOf('连不上') < 0, 'esc during the shop is not a connection failure, saw ' + shopNote);
+  assert(!left.errors.length, 'esc client errors ' + left.errors.join(' | '));
+  assert(!right.errors.length, 'esc peer errors ' + right.errors.join(' | '));
+}
+
+async function testDeathNames(leftBrowser, rightBrowser, port) {
+  const left = await boot(leftBrowser, port, '甲');
+  const right = await boot(rightBrowser, port, '乙');
+  await left.page.evaluate(() => document.getElementById('multi').click());
+  await right.page.evaluate(() => document.getElementById('multi').click());
+  await until(left.page, () => window.__echoNet().active && window.__echoNet().players.length === 2, 'death lobby');
+  await key(left.page, 'keydown', ' ');
+  await key(left.page, 'keyup', ' ');
+  await until(left.page, () => window.__echo().state === 'shop', 'death shop', 12000);
+  await left.page.evaluate(() => window.__echoShop({ act: 'ready' }));
+  await right.page.evaluate(() => window.__echoShop({ act: 'ready' }));
+  await until(left.page, () => {
+    const line = window.__echo().deathText || '';
+    return window.__echo().state === 'over' && line.indexOf('撞上了') >= 0;
+  }, 'named death', 8000);
+  const text = await left.page.evaluate(() => window.__echo().deathText);
+  const peer = await right.page.evaluate(() => window.__echo().deathText);
+  assert(text === peer, 'both clients show the same death line, ' + text + ' vs ' + peer);
+  assert(/^(甲|乙)撞上了自己的回声$/.test(text), 'the death line names the victim, saw ' + text);
+  await left.page.screenshot({ path: path.join(OUT, 'death-a.png') });
+  await right.page.screenshot({ path: path.join(OUT, 'death-b.png') });
+  assert(!left.errors.length, 'death client errors ' + left.errors.join(' | '));
+  assert(!right.errors.length, 'death peer errors ' + right.errors.join(' | '));
 }
 
 async function testPair(leftBrowser, rightBrowser, port, app) {
@@ -266,6 +384,40 @@ async function testPair(leftBrowser, rightBrowser, port, app) {
   if (shopping) {
     const shopNote = await left.page.evaluate(() => document.getElementById('netmsg').textContent || '');
     assert(shopNote.indexOf('同一块') < 0, 'the shop hides the start hint, saw ' + shopNote);
+    await left.page.screenshot({ path: path.join(OUT, 'shop-a.png') });
+    const edge = await left.page.evaluate(() => {
+      const echo = window.__echo();
+      const me = window.__echoNet().players.find((p) => p.name === '甲');
+      const hex = (me && me.color) || '#ff8ad4';
+      const n = parseInt(hex.slice(1), 16);
+      const pr = (n >> 16) & 255;
+      const pg = (n >> 8) & 255;
+      const pb = n & 255;
+      const panelLeft = 28;
+      const panelRight = 28 + echo.W - 56;
+      const canvas = document.getElementById('c');
+      const ctx = canvas.getContext('2d');
+      const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      const dpr = canvas.width / window.innerWidth;
+      let inside = 0;
+      let outside = 0;
+      for (let y = 0; y < img.height; y++) {
+        for (let x = 0; x < img.width; x++) {
+          const i = (y * img.width + x) * 4;
+          const dr = Math.abs(img.data[i] - pr);
+          const dg = Math.abs(img.data[i + 1] - pg);
+          const db = Math.abs(img.data[i + 2] - pb);
+          if (dr + dg + db > 70) continue;
+          const gx = (x / dpr - echo.view.ox) / echo.view.s;
+          if (gx < panelLeft || gx > panelRight) outside++;
+          else inside++;
+        }
+      }
+      return { x: echo.x, inside, outside, panelRight, color: hex };
+    });
+    assert(edge.x > edge.panelRight - 40, 'the shop opened with the player against the arena edge, saw ' + edge.x);
+    assert(edge.inside > 20, 'the player sprite is drawn inside the shop panel, saw ' + edge.inside);
+    assert(edge.outside === 0, 'the player sprite stays inside the shop panel, spill ' + edge.outside);
     await left.page.evaluate(() => {
       const offer = window.__echo().offers[0];
       if (offer) window.__echoShop({ act: 'buy', uid: offer.uid });
@@ -345,6 +497,15 @@ async function testPair(leftBrowser, rightBrowser, port, app) {
   await right.page.screenshot({ path: path.join(OUT, 'solid-b.png') });
   await key(left.page, 'keyup', 'ArrowRight');
   await key(right.page, 'keyup', 'ArrowLeft');
+  await sleep(250);
+  const [localA, remoteA] = await Promise.all([
+    left.page.evaluate(() => window.__echo().x),
+    right.page.evaluate(() => {
+      const row = window.__echoNet().players.find((p) => p.name === '甲');
+      return row ? row.x : null;
+    }),
+  ]);
+  assert(remoteA != null && Math.abs(localA - remoteA) < 2, 'the local player matches the server, ' + localA + ' vs ' + remoteA);
   await left.page.evaluate(() => document.getElementById('leave').click());
   await until(left.page, () => window.__echo().state === 'menu', 'left the match');
   const returned = await hiddenButtons(left.page);

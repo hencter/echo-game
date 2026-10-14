@@ -7,6 +7,7 @@
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   const STEPS = 360;
   const GRACE = 60;
+  const GRACE_TICKS = GRACE;
   const W = 960;
   const H = 540;
   const WARN_BASE = 75;
@@ -172,10 +173,11 @@
     return ghostCount > 0 && t < GRACE;
   }
 
-  function echoDeathLine(victimId, ghostOwnerId, ownerName) {
+  function echoDeathLine(victimId, ghostOwnerId, ownerName, victimName) {
     if (!ghostOwnerId) return '被怪物打倒了';
-    if (ghostOwnerId === victimId) return '撞上了自己的回声';
-    return '撞上了' + (ownerName || '回声') + '的回声';
+    const who = victimName || '';
+    if (ghostOwnerId === victimId) return who + '撞上了自己的回声';
+    return who + '撞上了' + (ownerName || '回声') + '的回声';
   }
 
   function axis(v) {
@@ -1153,6 +1155,7 @@
   return {
     STEPS: STEPS,
     GRACE: GRACE,
+    GRACE_TICKS: GRACE_TICKS,
     W: W,
     H: H,
     WARN_BASE: WARN_BASE,

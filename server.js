@@ -103,6 +103,8 @@ function createRoom(name, dispose) {
     round: 1,
     t: 0,
     step: 0,
+    roundTick: 0,
+    graceUntilTick: rules.GRACE_TICKS,
     epoch: 0,
     banner: 0,
     seq: 0,
@@ -127,7 +129,14 @@ function createRoom(name, dispose) {
   }
 
   function graceNow() {
-    return room.state === 'play' && rules.protecting(room.ghosts.length, room.t);
+    return room.state === 'play' && room.ghosts.length > 0 && room.roundTick < room.graceUntilTick;
+  }
+
+  function openRoundClock() {
+    room.step = 0;
+    room.roundTick = 0;
+    room.t = 0;
+    room.graceUntilTick = rules.GRACE_TICKS;
   }
 
   function blankCombat(player, keepGear) {
@@ -240,9 +249,10 @@ function createRoom(name, dispose) {
       epoch: room.epoch,
       state: room.state,
       round: room.round,
-      t: room.t,
+      t: room.roundTick,
       step: room.step,
       grace: graceNow(),
+      grace_until_tick: room.graceUntilTick,
       banner: room.banner,
       stars: room.stars.map((star) => ({ x: star.x, y: star.y })),
       players: [...room.players.values()].map((player) => ({
@@ -313,17 +323,18 @@ function createRoom(name, dispose) {
   }
 
   function collide() {
-    if (rules.protecting(room.ghosts.length, room.t)) return;
+    const roundTick = room.roundTick;
     const dist = rules.collideDist(rules.W, rules.H, room.ghosts.length);
     for (const player of alive()) {
+      if (roundTick < rules.GRACE_TICKS) continue;
       let best = null;
       const stats = rules.poweredStats(player.gear);
       const stage = room.mode === 'campaign' ? rules.stageById(room.stageId) : null;
       const core = rules.mergeCore(stats.core, rules.stageEcho(stage, room.round));
       for (const ghost of room.ghosts) {
-        const index = Math.min(room.t, (ghost.pts || []).length - 1);
+        const index = Math.min(roundTick, (ghost.pts || []).length - 1);
         if (ghost.eaten && ghost.eaten[index]) continue;
-        const q = rules.echoAt(ghost.pts, room.t, {
+        const q = rules.echoAt(ghost.pts, roundTick, {
           x: player.x,
           y: player.y,
           vx: player.vx,
@@ -366,8 +377,9 @@ function createRoom(name, dispose) {
       room.events.push({
         type: 'die',
         victim_id: player.id,
+        victim_name: player.name,
         ghost_owner_id: best.ghost.ownerId,
-        tick: room.t,
+        tick: roundTick,
         x: player.x,
         y: player.y,
       });
@@ -449,7 +461,15 @@ function createRoom(name, dispose) {
         player.vx = 0;
         player.vy = 0;
         player.rec = [];
-        room.events.push({ type: 'die', victim_id: player.id, ghost_owner_id: '', tick: room.t, x: player.x, y: player.y });
+        room.events.push({
+          type: 'die',
+          victim_id: player.id,
+          victim_name: player.name,
+          ghost_owner_id: '',
+          tick: room.roundTick,
+          x: player.x,
+          y: player.y,
+        });
       }
     }
     const reaped = rules.reapMonsters(room.monsters, room.seed, room.step);
@@ -552,8 +572,7 @@ function createRoom(name, dispose) {
       room.monsters = rules.spawnWave(stage, room.round, room.seed, room.monsters);
       room.shots = [];
     }
-    room.t = 0;
-    room.step = 0;
+    openRoundClock();
     room.shopLeft = 0;
     room.banner = 70;
     room.stars = [];
@@ -597,7 +616,8 @@ function createRoom(name, dispose) {
       if (room.mode === 'campaign') rules.pushOut(player, room.walls, 12);
     }
     room.step += 1;
-    room.t = room.step - 1;
+    room.roundTick = room.step - 1;
+    room.t = room.roundTick;
     for (const player of alive()) {
       const stats = rules.statsOf(player.gear);
       const nudge = rules.hallucinationNudge(room.step, stats.noise, player.nudgeSalt);
@@ -638,8 +658,7 @@ function createRoom(name, dispose) {
   function beginMatch() {
     room.state = 'play';
     room.round = 1;
-    room.t = 0;
-    room.step = 0;
+    openRoundClock();
     room.banner = 0;
     room.ghosts = [];
     room.stars = [];
